@@ -45,7 +45,7 @@ class BuildingBlock(nn.Module):
 class MaxPool(nn.Module):
     def __init__(self): 
         super(MaxPool, self).__init__() 
-        self.maxpool =  nn.MaxPool2d(kernel_size=1, stride=2)
+        self.maxpool =  nn.MaxPool2d(kernel_size=2, stride=2)
     def forward(self,x):
         x,_mask_list,_lasso_loss,_mask_before_list,_avg_fea_list=x 
         x=self.maxpool(x)

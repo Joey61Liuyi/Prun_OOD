@@ -4,7 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn, optim, autograd
 import torch.utils.data as Data
-import torchvision 
+import torchvision
+from dataset import MNIST_colored
 from maskvgg import maskvgg11
 import  cv2
 import os
@@ -12,14 +13,18 @@ import logging
 import math
 from logging import FileHandler
 from logging import StreamHandler
+from dataset import prepare_ood_colored_mnist
 import torch.optim.lr_scheduler as lr_scheduler
 from common import  *
+import os
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 # from prun import *
 def str2bool(v):
   return v.lower() in ("yes", "true", "t", "1")
 
 use_cuda = torch.cuda.is_available()
-
 
 parser = argparse.ArgumentParser(description='Colored MNIST')
 parser.add_argument('--hidden_dim', type=int, default=256)
@@ -37,8 +42,8 @@ parser.add_argument('--train_set_size', type=int, default=50000)
 parser.add_argument('--eval_interval', type=int, default=10)
 parser.add_argument('--print_eval_intervals', type=str2bool, default=True)
 parser.add_argument('--polar', type=bool, default=True)
-parser.add_argument('--train_env_1__color_noise', type=float, default=0.8)
-parser.add_argument('--train_env_2__color_noise', type=float, default=0.9)
+parser.add_argument('--train_env_1__color_noise', type=float, default=0.9)
+parser.add_argument('--train_env_2__color_noise', type=float, default=0.8)
 #parser.add_argument('--val_env__color_noise', type=float, default=0.1)
 parser.add_argument('--test_env__color_noise', type=float, default=0.2)
 
@@ -172,7 +177,20 @@ def pretty_print(*values):
   print("   ".join(str_values))
 
 color_dict = {'0': [255,0,0], '1': [255,255,0], '2': [0,255,0], '3': [0,100,0], '4': [0,0,255], '5': [255, 0,255],'6': [0,0,128], '7': [220,220,220], '8': [255,255,255], '9': [0,255,255]}
-num_classes = 10  
+num_classes = 10
+def create_env(p, val=False, batch_size = 5000):
+  # if os.path.exists('Mixed_Mnist_train_{}.pt'.format(p)):
+  #   pass
+  # else:
+  mixed_train, mixed_test = prepare_ood_colored_mnist('mnist', p)
+  if val:
+    loader = torch.utils.data.DataLoader(mixed_test, len(mixed_test), shuffle=True)
+  else:
+    loader = torch.utils.data.DataLoader(mixed_train, batch_size, shuffle=True)
+  return {
+    "loader": loader
+  }
+
 def make_environment(images, labels, e):
   def torch_bernoulli(p, size):
     return (torch.rand(size) < p).float()
@@ -206,7 +224,6 @@ def make_environment(images, labels, e):
     'images': (images.float() / 255.).cuda(),
     'labels': labels[:, None].cuda()
   }
-  
 train_data = torchvision.datasets.MNIST(root='/data/wyc', train=True,
                                         transform=torchvision.transforms.ToTensor(),
                                         download=True)
@@ -231,15 +248,15 @@ np.random.shuffle(mnist_val[0].numpy())
 np.random.set_state(rng_state)
 np.random.shuffle(mnist_val[1].numpy())
 
-envs = [
-  make_environment(mnist_train[0][::2], mnist_train[1][::2], args.train_env_1__color_noise),
-  make_environment(mnist_train[0][1::2], mnist_train[1][1::2], args.train_env_2__color_noise),
-  make_environment(mnist_val[0], mnist_val[1], args.test_env__color_noise),
-  #make_environment(mnist_train[0][:25000:], mnist_train[1][:25000:], args.test_env__color_noise)
-]  
-train_batch_num = envs[0]['images'].shape[0] / args.batch_size 
-val_batch_num = envs[2]['images'].shape[0] / args.batch_size 
-test_batch_num = envs[2]['images'].shape[0] / args.batch_size 
+# envs = [
+#   make_environment(mnist_train[0][::2], mnist_train[1][::2], args.train_env_1__color_noise),
+#   make_environment(mnist_train[0][1::2], mnist_train[1][1::2], args.train_env_2__color_noise),
+#   make_environment(mnist_val[0], mnist_val[1], args.test_env__color_noise),
+#   #make_environment(mnist_train[0][:25000:], mnist_train[1][:25000:], args.test_env__color_noise)
+# ]
+# train_batch_num = envs[0]['images'].shape[0] / args.batch_size
+# val_batch_num = envs[2]['images'].shape[0] / args.batch_size
+# test_batch_num = envs[2]['images'].shape[0] / args.batch_size
 # Define and instantiate the model
 if False:
   model = torch.load(args.resume)
@@ -259,6 +276,16 @@ scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.1,last_e
 pretty_print('step', 'train nll', 'train acc', 'rex penalty', 'irmv1 penalty', 'test acc')
 train_los_pre=None
 
+p1 = args.train_env_1__color_noise
+p2 = args.train_env_2__color_noise
+p_test = args.test_env__color_noise
+
+env1 = create_env(p1, False, args.batch_size)
+env2 = create_env(p2, False, args.batch_size)
+env_test = create_env(p_test, True, args.batch_size)
+envs = [env1, env2, env_test]
+
+
 for epoch in range(args.epochs):
 
   highest_test_acc = 0.0
@@ -270,7 +297,7 @@ for epoch in range(args.epochs):
   top5 = AverageMeter()
   loss_ce_list=[]  
 
-  for step in range(int(train_batch_num)):
+  for step in range(len(env1['loader'])):
     n =step
     _mask_list = []
     lasso_list = []
@@ -278,13 +305,19 @@ for epoch in range(args.epochs):
     _avg_fea_list = []                   
     batch_size = int(args.batch_size)
     mlp.train()
-    for edx, env in enumerate(envs[:2]):  
-      
-      logits,env['_mask_list'],env['lasso_list'],env['_mask_before_list'],env['_avg_fea_list']= mlp(env['images'][int(n*batch_size):int((n+1)*batch_size)])
+    for edx, env in enumerate(envs[:2]):
+      x, y = next(iter(env["loader"]))
+      x = x.cuda()
+      y = y.cuda()
+      y, domain_label = torch.split(y,1,dim=1)
+      y = y.squeeze().long()
+      domain_label = domain_label.squeeze()
+      logits,env['_mask_list'],env['lasso_list'],env['_mask_before_list'],env['_avg_fea_list']= mlp(x)
       #logits,_mask_list,lasso_list,_mask_before_list,_avg_fea_list= mlp(env['images'][int(n*batch_size):int((n+1)*batch_size)])
-      env['nll'] = mean_nll(logits, env['labels'][int(n*batch_size):int((n+1)*batch_size)])
-      env['acc'] = mean_accuracy(logits, env['labels'][int(n*batch_size):int((n+1)*batch_size)])
-      env['penalty'] = penalty(logits, env['labels'][int(n*batch_size):int((n+1)*batch_size)])
+      env['nll'] = mean_nll(logits, y)
+      env['acc'] = mean_accuracy(logits, y)
+      env['penalty'] = penalty(logits, y)
+      env['domain_label'] = domain_label
     
     train_nll = torch.stack([envs[0]['nll'], envs[1]['nll']]).mean()
     train_acc = torch.stack([envs[0]['acc'], envs[1]['acc']]).mean()
@@ -306,6 +339,7 @@ for epoch in range(args.epochs):
     loss = 0.0
     loss_lasso=0.0
     loss_each = torch.cat([loss1, loss2],dim=0)
+    domain_each = torch.cat([envs[0]["domain_label"], envs[1]["domain_label"]], dim=0)
    
     loss = args.erm_amount * loss_each.mean()    
    
@@ -332,20 +366,25 @@ for epoch in range(args.epochs):
       if train_los_pre != None:
         train_los_pre=train_los_pre.mean().cuda()
         w1=(loss_each > args.thre_cls*train_los_pre).float()
-        print(w1.sum()/w1.numel())
+        # print(w1.sum()/w1.numel())
+        loss_increse_num = w1.sum()
+        data_num = w1.numel()
+        ood_num = domain_each.sum()
+        bingo = w1*domain_each
+        print("all data's increase possibility: {}; ood's loss increase possibility: {}".format(loss_increse_num/data_num, bingo.sum()/ood_num))
 
         w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each.mean()))
-       
-        w=w1*w2                
+
+        w=w1*w2
         for ilasso in range(len(lasso_list)):
-          loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()     
+          loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()
           # why 'w2' is wrong? 
           #iter, layer, avglasso, loss 3 0 tensor(1478.3196, device='cuda:0', grad_fn=<MeanBackward0>) tensor(4.1995, device='cuda:0', grad_fn=<MeanBackward0>) tensor(0.0028, device='cuda:0')
           # mistake 2:w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each)) the denominator lost .mean()
           
         loss += args.lambda_lasso*loss_lasso
 
-    
+
     #****************************Regularization3: Sparse Pelnalty)*****************
     
     if args.bn:
@@ -367,10 +406,14 @@ for epoch in range(args.epochs):
   if epoch % args.eval_interval == 0:
     mlp.eval()
     with torch.no_grad():
-      logits,_mask_list,lasso_list,_mask_before_list,_avg_fea_list= mlp(envs[2]['images'])
-      envs[2]['nll'] =  mean_nll(logits,envs[2]['labels'])
-      envs[2]['acc'] =  mean_accuracy(logits,envs[2]['labels'])                     
-      test_acc = envs[2]['acc'] / val_batch_num
+      x, y = next(iter(envs[2]["loader"]))
+      x = x.cuda()
+      y = y.cuda().long()
+      y, domain_label = torch.split(y, 1,dim=1)
+      logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
+      envs[2]['nll'] =  mean_nll(logits,y)
+      envs[2]['acc'] =  mean_accuracy(logits,y)
+      test_acc = envs[2]['acc']*args.batch_size / len(envs[2]["loader"])
     train_acc_scalar = train_acc.detach().cpu().numpy()
     test_acc_scalar = test_acc.detach().cpu().numpy()
     if (train_acc_scalar >= test_acc_scalar) and (test_acc_scalar > highest_test_acc):
