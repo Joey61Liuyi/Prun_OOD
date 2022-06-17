@@ -17,15 +17,17 @@ from dataset import prepare_ood_colored_mnist
 import torch.optim.lr_scheduler as lr_scheduler
 from common import  *
 import os
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+import wandb
+from dataset import manual_seed
 
 # from prun import *
+
+
 def str2bool(v):
   return v.lower() in ("yes", "true", "t", "1")
 
 use_cuda = torch.cuda.is_available()
-
+manual_seed(61)
 parser = argparse.ArgumentParser(description='Colored MNIST')
 parser.add_argument('--hidden_dim', type=int, default=256)
 parser.add_argument('--l2_regularizer_weight', type=float,default=0.001)
@@ -72,7 +74,6 @@ parser.add_argument('--pruned_savepath', type=str, default='nslim_pruned.pth.tar
 #parser.add_argument('--resume', type=str, default="/home/lthpc/wyc/wyc/Prun_For_OOD/colored_mnist/checkpoint/full_2.pth.tar")
 parser.add_argument('--resume', type=str, default=None)
 args = parser.parse_args()
-
 
 root='./check_point'
 logger_file = os.path.join(root,args.logpath)
@@ -233,8 +234,6 @@ val_data = torchvision.datasets.MNIST(root='/data/wyc',
 test_data = torchvision.datasets.MNIST(root='/data/wyc',
                                        transform=torchvision.transforms.ToTensor(),
                                        train=False)
-
-                                 
 mnist_train = (train_data.data[:50000], train_data.targets[:50000])
 mnist_val = (train_data.data[40000:60000], train_data.targets[40000:60000])
 mnist_test = (test_data.data[:10000], test_data.targets[:10000])
@@ -284,6 +283,13 @@ env1 = create_env(p1, False, args.batch_size)
 env2 = create_env(p2, False, args.batch_size)
 env_test = create_env(p_test, True, args.batch_size)
 envs = [env1, env2, env_test]
+if args.bn == False and args.cox == True:
+  name = 'Ours+REX'
+elif args.bn == True and args.cox == False:
+  name = 'REX'
+
+wandb.init(project = "Prune_OOD", name = name)
+
 
 
 for epoch in range(args.epochs):
@@ -302,7 +308,10 @@ for epoch in range(args.epochs):
     _mask_list = []
     lasso_list = []
     _mask_before_list = []
-    _avg_fea_list = []                   
+    _avg_fea_list = []
+    data_loss_increase_p = []
+    ood_loss_increase_p = []
+
     batch_size = int(args.batch_size)
     mlp.train()
     for edx, env in enumerate(envs[:2]):
@@ -360,21 +369,22 @@ for epoch in range(args.epochs):
       loss /= penalty_weight
    
     #****************************Regularization2: Complex Pelnalty)***************************
-    
+    loss_ce_list.append(loss_each.data.cpu())
+    if train_los_pre != None:
+      train_los_pre = train_los_pre.mean().cuda()
+      w1 = (loss_each > args.thre_cls * train_los_pre).float()
+      # print(w1.sum()/w1.numel())
+      loss_increse_num = w1.sum()
+      data_num = w1.numel()
+      ood_num = domain_each.sum()
+      bingo = w1 * domain_each
+      tep = loss_increse_num / data_num * 100
+      data_loss_increase_p.append(tep.tolist())
+      tep = bingo.sum() / ood_num * 100
+      ood_loss_increase_p.append(tep.tolist())
     if args.cox:
-      loss_ce_list.append(loss_each.data.cpu())
       if train_los_pre != None:
-        train_los_pre=train_los_pre.mean().cuda()
-        w1=(loss_each > args.thre_cls*train_los_pre).float()
-        # print(w1.sum()/w1.numel())
-        loss_increse_num = w1.sum()
-        data_num = w1.numel()
-        ood_num = domain_each.sum()
-        bingo = w1*domain_each
-        print("all data's increase possibility: {}; ood's loss increase possibility: {}".format(loss_increse_num/data_num, bingo.sum()/ood_num))
-
         w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each.mean()))
-
         w=w1*w2
         for ilasso in range(len(lasso_list)):
           loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()
@@ -384,13 +394,12 @@ for epoch in range(args.epochs):
           
         loss += args.lambda_lasso*loss_lasso
 
-
     #****************************Regularization3: Sparse Pelnalty)*****************
     
     if args.bn:
       for ilasso in range(len(lasso_list)):
           loss_lasso=loss_lasso + lasso_list[ilasso].mean()
-      loss += 0.1*loss_lasso
+      loss += args.lambda_lasso*loss_lasso
     
     #****************************************************************************
     
@@ -399,10 +408,15 @@ for epoch in range(args.epochs):
     #updateSaliencyBlock(0.00001, mlp)
     optimizer.step()
     scheduler.step()
-  if args.cox:
-    train_los_pre=torch.cat(loss_ce_list,dim=0)
-  
 
+  train_los_pre=torch.cat(loss_ce_list,dim=0)
+
+  info_dict = {
+    "epoch": epoch,
+    "loss increase possibility": np.average(data_loss_increase_p),
+    "ood loss increase possibility": np.average(ood_loss_increase_p),
+  }
+  wandb.log(info_dict)
   if epoch % args.eval_interval == 0:
     mlp.eval()
     with torch.no_grad():
@@ -413,7 +427,7 @@ for epoch in range(args.epochs):
       logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
       envs[2]['nll'] =  mean_nll(logits,y)
       envs[2]['acc'] =  mean_accuracy(logits,y)
-      test_acc = envs[2]['acc']*args.batch_size / len(envs[2]["loader"])
+      test_acc = envs[2]['acc']*args.batch_size / envs[2]["loader"].batch_size
     train_acc_scalar = train_acc.detach().cpu().numpy()
     test_acc_scalar = test_acc.detach().cpu().numpy()
     if (train_acc_scalar >= test_acc_scalar) and (test_acc_scalar > highest_test_acc):
@@ -421,12 +435,20 @@ for epoch in range(args.epochs):
     all_test_accs[epoch, step] = test_acc.detach().cpu().numpy()
     
     if args.print_eval_intervals:
-      pretty_print(
-        np.int32(epoch),
-        train_nll.detach().cpu().numpy(),
-        train_acc.detach().cpu().numpy(),
-        test_acc.detach().cpu().numpy()
-      )
+      # pretty_print(
+      #   np.int32(epoch),
+      #   train_nll.detach().cpu().numpy(),
+      #   train_acc.detach().cpu().numpy(),
+      #   test_acc.detach().cpu().numpy()
+      # )
+      info_dict = {
+        "epoch": epoch,
+        "train_loss": train_nll,
+        "train_acc": train_acc,
+        "test_acc": test_acc
+      }
+      wandb.log(info_dict)
+
       logging.info("epoch: [{}]\t"
            "Train Loss {train_nll:.3f}\t"
            "Train Acc@1 {train_acc:.3f}\t"
