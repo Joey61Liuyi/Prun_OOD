@@ -15,12 +15,11 @@ from logging import FileHandler
 from logging import StreamHandler
 from dataset import prepare_ood_colored_mnist
 import torch.optim.lr_scheduler as lr_scheduler
-from common import  *
+from common import *
 import os
 import wandb
 from dataset import manual_seed
-
-# from prun import *
+from prun import prune_while_training
 
 
 def str2bool(v):
@@ -74,7 +73,18 @@ parser.add_argument('--pruned_savepath', type=str, default='nslim_pruned.pth.tar
 #parser.add_argument('--resume', type=str, default="/home/lthpc/wyc/wyc/Prun_For_OOD/colored_mnist/checkpoint/full_2.pth.tar")
 parser.add_argument('--resume', type=str, default=None)
 args = parser.parse_args()
-
+if (args.bn == False) and (args.cox == False):
+  args.logpath = 'baseline.txt'
+  args.savepath = 'baseline_sparse.pth.tar'
+  args.savepath = 'baseline_pruned.pth.tar'
+elif (args.bn == False) and (args.cox == True):
+  args.logpath = 'cox.txt'
+  args.savepath = 'cox_sparse.pth.tar'
+  args.savepath = 'cox_pruned.pth.tar'
+elif (args.bn == True) and (args.cox == False):
+  args.logpath = 'normal.txt'
+  args.savepath = 'normal_sparse.pth.tar'
+  args.savepath = 'normal_pruned.pth.tar'
 root='./check_point'
 logger_file = os.path.join(root,args.logpath)
 logger=logging.getLogger()
@@ -384,7 +394,7 @@ for epoch in range(args.epochs):
       ood_loss_increase_p.append(tep.tolist())
     if args.cox:
       if train_los_pre != None:
-        w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each.mean()))
+        w2=((args.thre_cls*train_los_pre-loss_each)/(loss_each.mean()))
         w=w1*w2
         for ilasso in range(len(lasso_list)):
           loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()
@@ -462,7 +472,9 @@ for epoch in range(args.epochs):
         all_irmv1_penalties[epoch, step] = irmv1_penalty.detach().cpu().numpy()
 sparse_model = mlp
 torch.save(sparse_model,os.path.join(root,args.savepath))
-pruned_model = prune_while_training(sparse_model, num_classes=num_classes, data = envs[2]['images'].cpu())
+
+x, y = next(iter(envs[1]["loader"]))
+pruned_model = prune_while_training(sparse_model, num_classes=num_classes, data = x.cpu())
 torch.save(pruned_model,os.path.join(root,args.pruned_savepath))
 '''
 freeze_mask(mlp)

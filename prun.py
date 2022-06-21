@@ -1,5 +1,5 @@
 from common import *
-from vgg import *
+#from maskvgg import *
 
 import copy
 import os
