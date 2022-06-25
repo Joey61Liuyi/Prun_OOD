@@ -251,7 +251,7 @@ def pretty_print(*values):
 #     'labels': labels[:, None].cuda()
 #   }
 def train(mlp, lambda_lasso,finetunepath, name):
-  wandb.init(project="Prune_OOD", name=name)
+  wandb.init(project="Prune_OOD", entity='peilab', name=name)
   optimizer = optim.SGD(mlp.parameters(), lr=args.lr, momentum=0.9)
   scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.1,last_epoch=-1)
   pretty_print('step', 'train nll', 'train acc', 'rex penalty', 'irmv1 penalty', 'test acc')

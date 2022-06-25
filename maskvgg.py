@@ -94,7 +94,8 @@ class MaskBlock(nn.Module):
         thred = score[:, int(mask_before.shape[1] * 0.7)].reshape(batch_size,-1)
     
         mask = (mask_before > thred).float().to(mask_before.device)
-        masked_score = mask_before * mask
+        # masked_score = mask_before * mask
+        masked_score = mask_before
         return masked_score,_lasso,mask_before, mask
 
 class MaskVGGBlock(BuildingBlock):

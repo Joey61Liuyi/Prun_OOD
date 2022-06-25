@@ -298,8 +298,10 @@ if args.bn == False and args.cox == True:
 elif args.bn == True and args.cox == False:
   name = 'REX'
 
-wandb.init(project = "Prune_OOD", name = name)
+elif args.bn == False and args.cox == False:
+  name = 'No pruning'
 
+wandb.init(project = "Prune_OOD", entity='peilab', name = name)
 
 
 for epoch in range(args.epochs):
@@ -312,6 +314,8 @@ for epoch in range(args.epochs):
   top1 = AverageMeter()
   top5 = AverageMeter()
   loss_ce_list=[]  
+  id_score_collection = []
+  ood_score_collection = []
 
   for step in range(len(env1['loader'])):
     n =step
@@ -346,7 +350,26 @@ for epoch in range(args.epochs):
       lasso_list.append(torch.cat([envs[0]['lasso_list'][l], envs[1]['lasso_list'][l]],dim=0))
       _mask_before_list.append(torch.cat([envs[0]['_mask_before_list'][l], envs[1]['_mask_before_list'][l]],dim=0))
       _avg_fea_list.append(torch.cat([envs[0]['_avg_fea_list'][l], envs[1]['_avg_fea_list'][l]],dim=0))
-    
+
+
+    ood_label_total = torch.cat([envs[0]['domain_label'],envs[1]['domain_label']], dim=0)
+    id_label_total = 1-ood_label_total
+    ood_score_avg = []
+    id_score_avg = []
+    for i in lasso_list:
+      tep = i*ood_label_total
+      tep = tep[torch.nonzero(tep)]
+      tep = torch.mean(tep)
+      ood_score_avg.append(tep.detach().cpu().numpy().tolist())
+
+      tep = i * id_label_total
+      tep = tep[torch.nonzero(tep)]
+      tep = torch.mean(tep)
+      id_score_avg.append(tep.detach().cpu().numpy().tolist())
+
+    id_score_collection.append(id_score_avg)
+    ood_score_collection.append(ood_score_avg)
+
     if use_cuda:
       weight_norm = torch.tensor(0.).cuda()
     else:
@@ -426,6 +449,17 @@ for epoch in range(args.epochs):
     "loss increase possibility": np.average(data_loss_increase_p),
     "ood loss increase possibility": np.average(ood_loss_increase_p),
   }
+
+  ood_score_collection = np.array(ood_score_collection)
+  id_score_collection = np.array(id_score_collection)
+  ood_score_collection = np.mean(ood_score_collection, axis=0)
+  id_score_collection = np.mean(id_score_collection, axis=0)
+
+  for layer in range(len(id_score_collection)):
+    info_dict["id score of layer {}".format(layer)] = id_score_collection[layer]
+    info_dict["ood score of layer {}".format(layer)] = ood_score_collection[layer]
+  info_dict["general id score"] = id_score_collection.mean()
+  info_dict["general ood score"] = ood_score_collection.mean()
   wandb.log(info_dict)
   if epoch % args.eval_interval == 0:
     mlp.eval()
