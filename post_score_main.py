@@ -405,7 +405,7 @@ for epoch in range(args.epochs):
     loss_ce_list.append(loss_each.data.cpu())
     if train_los_pre != None:
       train_los_pre = train_los_pre.mean().cuda()
-      w1 = (loss_each > args.thre_cls * train_los_pre).float()
+      w1 = (loss_each < args.thre_cls * train_los_pre).float()
       # print(w1.sum()/w1.numel())
       loss_increse_num = w1.sum()
       data_num = w1.numel()
@@ -417,7 +417,8 @@ for epoch in range(args.epochs):
       ood_loss_increase_p.append(tep.tolist())
     if args.cox:
       if train_los_pre != None:
-        w2=((args.thre_cls*train_los_pre-loss_each)/(loss_each.mean()))
+        # w2=((loss_each-args.thre_cls*train_los_pre)/(loss_each.mean()))
+        w2=10
         w=w1*w2
         for ilasso in range(len(lasso_list)):
           loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()
@@ -432,7 +433,7 @@ for epoch in range(args.epochs):
     if args.bn:
       for ilasso in range(len(lasso_list)):
           loss_lasso=loss_lasso + lasso_list[ilasso].mean()
-      loss += args.lambda_lasso*loss_lasso
+      loss += 10*args.lambda_lasso*loss_lasso
     
     #****************************************************************************
     

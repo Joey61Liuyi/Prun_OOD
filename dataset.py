@@ -740,8 +740,10 @@ def prepare_mixed_data(data_set, colored_set, p):
     colored_train_num = int(data_num * p)
     colored_indexes = np.random.choice(data_num, colored_train_num, replace=False)
     rest_indexes = list(set(range(data_num)) - set(colored_indexes))
+    
     original_data = data_set.data[rest_indexes].unsqueeze(dim=3)
     original_data = original_data.expand(-1, -1, -1, 3)
+
     colored_data = colored_set.data[colored_indexes]
     mixed_data = torch.cat([original_data, colored_data], dim=0)
 
@@ -770,7 +772,7 @@ def prepare_ood_colored_mnist(dataset_name = 'mnist',p:float =0.8, seed: int =1,
     # torch.save(mixed_test, 'Mixed_Mnist_test_{}.pt'.format(p))
     return mixed_train, mixed_test
 
-def full_colored_mnist(dataset_name = 'mnist', root: str = './datasets'):
+def full_colored_data(dataset_name = 'mnist', root: str = './datasets'):
     colored_mnist_dir = os.path.join(root, 'ColoredMNIST')
     train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
 
