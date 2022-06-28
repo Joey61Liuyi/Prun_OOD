@@ -159,6 +159,12 @@ def mnist_colored(root, augment=False):
     test_set = MNIST_colored(root=root, train=False, download=True, transform=transform_test)
     return train_set, test_set
 
+@_add_dataset
+def fmnist(root, augment=False):
+    transform_train, transform_test = _get_mnist_transforms(augment=augment)
+    train_set = torchvision.datasets.FashionMNIST(root=root, train= True, download=True, transform=transform_train)
+    test_set = torchvision.datasets.FashionMNIST(root=root, train=False, download=True, transform=transform_train)
+    return train_set, test_set
 
 class MNIST_colored(torchvision.datasets.MNIST):
     def __init__(
@@ -215,22 +221,6 @@ class MNIST_colored(torchvision.datasets.MNIST):
 #     train_set = Small_Binary_CIFAR10(root=root, train=True, transform=transform_train)
 #     test_set = Small_Binary_CIFAR10(root=root, train=False, transform=transform_test)
 #     return train_set, test_set
-
-
-@_add_dataset
-def cifar100(root, augment=False):
-    transform_train, transform_test = _get_cifar_transforms(augment=augment)
-    train_set = torchvision.datasets.CIFAR100(root=root, train=True, download=True, transform=transform_train)
-    test_set = torchvision.datasets.CIFAR100(root=root, train=False, download=True, transform=transform_test)
-    return train_set, test_set
-
-
-@_add_dataset
-def mnist(root, augment=False):
-    transform_train, transform_test = _get_mnist_transforms(augment=augment)
-    train_set = MNIST_colored(root=root, train=True, download=True, transform=transform_train)
-    test_set = MNIST_colored(root=root, train=False, download=True, transform=transform_test)
-    return train_set, test_set
 
 #
 # @_add_dataset
@@ -314,7 +304,8 @@ def mnist(root, augment=False):
 #
 #
 # @_add_dataset
-# def mix10(root, augment=False):
+# def mix10(root, aug
+# ment=False):
 #     transform_train, transform_test = _get_mix_transforms(augment=augment)
 #     lacuna_train_set = Lacuna10(root=root, train=True, transform=transform_train)
 #     lacuna_test_set = Lacuna10(root=root, train=False, transform=transform_test)
@@ -735,28 +726,38 @@ def color_grayscale_arr(arr, label):
 
   return new_image
 
+
+def random_color_grayscale_arr(arr):
+  assert arr.ndim == 2
+  arr = arr.numpy()
+  label = np.random.randint(0,10)
+  rgb = np.array(color_dict[int(label)])
+  rgb = rgb * 255
+  new_image = []
+  for i in arr:
+    row = []
+    for j in i:
+      tep = j/255
+      tep = rgb + (np.array([255,255,255])-rgb)*tep
+      row.append(tep)
+    new_image.append(row)
+  new_image = np.array(new_image).astype(np.uint8)
+  return new_image
+
 def prepare_mixed_data(data_set, colored_set, p):
     data_num = len(data_set.targets)
     colored_train_num = int(data_num * p)
     colored_indexes = np.random.choice(data_num, colored_train_num, replace=False)
     rest_indexes = list(set(range(data_num)) - set(colored_indexes))
-    
-    original_data = data_set.data[rest_indexes].unsqueeze(dim=3)
-    original_data = original_data.expand(-1, -1, -1, 3)
-
+    data_set.data = data_set.data[rest_indexes]
+    data_set.targets = data_set.targets[rest_indexes]
     colored_data = colored_set.data[colored_indexes]
-    mixed_data = torch.cat([original_data, colored_data], dim=0)
-
-    original_label = data_set.targets[rest_indexes].unsqueeze(1)
-    original_label = torch.cat([original_label, torch.ones(original_label.numel()).unsqueeze(1)], dim=1)
-    colored_label = colored_set.targets[colored_indexes].unsqueeze(1)
-    colored_label = torch.cat([colored_label, torch.zeros(colored_label.numel()).unsqueeze(1)], dim=1)
-    mixed_label = torch.cat([original_label, colored_label], dim = 0)
-
+    colored_label = colored_set.targets[colored_indexes]
+    mixed_data = torch.cat([data_set.data, colored_data], dim=0)
+    mixed_label = torch.cat([data_set.targets, colored_label], dim = 0)
     mixed_set = copy.deepcopy(data_set)
     mixed_set.data = mixed_data
     mixed_set.targets = mixed_label
-
     return mixed_set
 
 def prepare_ood_colored_mnist(dataset_name = 'mnist',p:float =0.8, seed: int =1, root: str = './datasets'):
@@ -772,186 +773,211 @@ def prepare_ood_colored_mnist(dataset_name = 'mnist',p:float =0.8, seed: int =1,
     # torch.save(mixed_test, 'Mixed_Mnist_test_{}.pt'.format(p))
     return mixed_train, mixed_test
 
-def full_colored_data(dataset_name = 'mnist', root: str = './datasets'):
-    colored_mnist_dir = os.path.join(root, 'ColoredMNIST')
+def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: bool = False):
+    colored_mnist_dir = os.path.join(root, dataset_name)
     train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
 
     train_colored = []
     test_colored = []
     for one in range(len(train_set)):
         print("{}/{}".format(one, len(train_set)))
-        train_colored.append(color_grayscale_arr(train_set.data[one], train_set.targets[one]))
+        if ood:
+            train_colored.append(random_color_grayscale_arr(train_set.data[one]))
+        else:
+            train_colored.append(color_grayscale_arr(train_set.data[one], train_set.targets[one]))
 
     for one in range(len(test_set)):
         print("{}/{}".format(one, len(test_set)))
-        test_colored.append(color_grayscale_arr(test_set.data[one], test_set.targets[one]))
+        if ood:
+            train_colored.append(random_color_grayscale_arr(test_set.data[one]))
+        else:
+            test_colored.append(color_grayscale_arr(test_set.data[one], test_set.targets[one]))
 
     train_set.data = torch.tensor(np.array(train_colored))
     test_set.data = torch.tensor(np.array(test_colored))
-    torch.save(train_set, 'Colored_Mnist_train.pt')
-    torch.save(test_set, 'Colored_Mnist_test.pt')
+    train_set.targets = train_set.targets.unsqueeze(1)
+    test_set.targets = test_set.targets.unsqueeze(1)
 
-def prepare_colored_mnist(dataset_name = 'mnist',data_num:int =2000, seed: int =1, root: str = './datasets'):
-    manual_seed(seed)
-    colored_mnist_dir = os.path.join(root, 'ColoredMNIST')
-    print('Preparing Colored MNIST')
-    train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
-    colored_mnist = train_set
-    original_mnist = copy.deepcopy(colored_mnist)
-    # indices = np.random.choice(len(colored_mnist.targets), data_num, replace=False)
-    # rest_indexes = list(set(range(len(colored_mnist))) - set(indices))
-    rest_indexes = np.random.choice(len(colored_mnist.targets), data_num, replace=False)
-    indices = list(set(range(len(colored_mnist))) - set(rest_indexes))
-    data_colored = []
-    for one in rest_indexes:
-        data_colored.append(color_grayscale_arr(colored_mnist.data[one], colored_mnist.targets[one]))
-    original_mnist.data = colored_mnist.data[indices].unsqueeze(dim=3)
-    original_mnist.data = original_mnist.data.expand(-1, -1, -1, 3)
-    original_mnist.targets = colored_mnist.targets[indices]
-    colored_mnist.data = torch.tensor(np.array(data_colored))
-    colored_mnist.targets = colored_mnist.targets[rest_indexes]
-    torch.save(colored_mnist, 'Colored_Mnist_{}.pt'.format(data_num))
-    torch.save(original_mnist, 'Colored_Mnist_{}_rest.pt'.format(data_num))
-
-def get_colored_mnist_loader(dataset_name, data_num: int = 5000,
-                seed: int = 1, root: str = './datasets',
-                batch_size=128, shuffle=True,
-                **dataset_kwargs):
-    '''
-
-    :param dataset_name: Name of dataset to use
-    :param class_to_replace: If not None, specifies which class to replace completely or partially
-    :param num_indexes_to_replace: If None, all samples from `class_to_replace` are replaced. Else, only replace
-                                   `num_indexes_to_replace` samples
-    :param indexes_to_replace: If not None, denotes the indexes of samples to replace. Only one of class_to_replace and
-                               indexes_to_replace can be specidied.
-    :param seed: Random seed to sample the samples to replace and to initialize the data loaders so that they sample
-                 always in the same order
-    :param root: Root directory to initialize the dataset
-    :param batch_size: Batch size of data loader
-    :param shuffle: Whether train data should be randomly shuffled when loading (test data are never shuffled)
-    :param dataset_kwargs: Extra arguments to pass to the dataset init.
-    :return: The train_loader and test_loader
-    '''
-    # prepare_colored_mnist(dataset_name, data_num=data_num, seed=seed, root=root)
-    u_set = torch.load('Colored_Mnist_{}.pt'.format(data_num))
-    r_set = torch.load('Colored_Mnist_{}_rest.pt'.format(data_num))
-
-    full_set = copy.deepcopy(r_set)
-    full_set.data = torch.cat((full_set.data, u_set.data), 0)
-    full_set.targets = torch.cat((full_set.targets, u_set.targets), 0)
-
-    dis_set = copy.deepcopy(u_set)
-    indices = np.random.choice(len(r_set.targets), len(u_set), replace=False)
-    dis_set.data = torch.cat((dis_set.data, r_set.data[indices]), 0)
-    dis_set.targets = torch.cat((torch.zeros(len(u_set)), torch.ones(len(indices))), 0)
-
-    loader_args = {'num_workers': 0, 'pin_memory': False}
-
-    def _init_fn(worker_id):
-        np.random.seed(int(seed))
-
-    r_loader = torch.utils.data.DataLoader(r_set, batch_size=batch_size, shuffle=shuffle,
-                                                 worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-    # valid_loader = torch.utils.data.DataLoader(valid_set, batch_size=batch_size, shuffle=False,
-    #                                            worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-    u_loader = torch.utils.data.DataLoader(u_set, batch_size=batch_size, shuffle=False,
-                                                  worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-
-    full_loader = torch.utils.data.DataLoader(full_set, batch_size=batch_size, shuffle=True,
-                                              worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-    dis_loader = torch.utils.data.DataLoader(dis_set, batch_size=batch_size, shuffle=True,
-                                             worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-
-    return r_loader, u_loader, full_loader, dis_loader
-
-
-def get_small_roated_loader(dataset_name, data_num: int = 5000,
-                seed: int = 1, only_mark: bool = False, root: str = './datasets',
-                batch_size=128, shuffle=True,
-                **dataset_kwargs):
-    '''
-
-    :param dataset_name: Name of dataset to use
-    :param class_to_replace: If not None, specifies which class to replace completely or partially
-    :param num_indexes_to_replace: If None, all samples from `class_to_replace` are replaced. Else, only replace
-                                   `num_indexes_to_replace` samples
-    :param indexes_to_replace: If not None, denotes the indexes of samples to replace. Only one of class_to_replace and
-                               indexes_to_replace can be specidied.
-    :param seed: Random seed to sample the samples to replace and to initialize the data loaders so that they sample
-                 always in the same order
-    :param root: Root directory to initialize the dataset
-    :param batch_size: Batch size of data loader
-    :param shuffle: Whether train data should be randomly shuffled when loading (test data are never shuffled)
-    :param dataset_kwargs: Extra arguments to pass to the dataset init.
-    :return: The train_loader and test_loader
-    '''
-    manual_seed(seed)
-    if root is None:
-        root = os.path.expanduser('~/data')
-    train_set, test_set = _DATASETS[dataset_name](root, **dataset_kwargs)
-    train_set.targets = torch.tensor(train_set.targets)
-    test_set.targets = torch.tensor(test_set.targets)
-
-    fname = '{}_{}_data_small_rotated.pt'.format(dataset_name,data_num)
-    if not os.path.isfile(fname):
-        indices = np.random.choice(len(train_set.targets), data_num, replace=False)
-        tep = copy.deepcopy(train_set)
-        tep.data = train_set.data[indices]
-        if isinstance(tep.data, type(torch.tensor([]))):
-            tep.data = torch.rot90(tep.data, 1, [1,2])
-        else:
-            tep.data = np.rot90(tep.data, 1, (1, 2))
-        tep.targets = train_set.targets[indices]
-        torch.save(tep, '{}_{}_data_small_rotated.pt'.format(dataset_name,data_num))
-        rest_indexes = list(set(range(len(train_set)))-set(indices))
-        train_set.data = train_set.data[rest_indexes]
-        train_set.targets = train_set.targets[rest_indexes]
-        torch.save(train_set, '{}_{}_data_small_rest.pt'.format(dataset_name, data_num))
-
-    train_set = torch.load('{}_{}_data_small_rest.pt'.format(dataset_name, data_num))
-    data_new = torch.load('{}_{}_data_small_rotated.pt'.format(dataset_name, data_num))
-
-    full_set = copy.deepcopy(train_set)
-    if isinstance(full_set.data, type(torch.tensor([]))):
-        full_set.data = torch.cat((full_set.data, data_new.data), 0)
+    if ood:
+        train_set.targets = torch.cat([train_set.targets, torch.ones(len(train_set.targets)).unsqueeze(1)], dim=1)
+        test_set.targets = torch.cat([test_set.targets, torch.ones(len(test_set.targets)).unsqueeze(1)], dim=1)
+        torch.save(train_set, 'OOD_Colored_{}_train.pt'.format(dataset_name))
+        torch.save(test_set, 'OOD_Colored_{}_test.pt'.format(dataset_name))
     else:
-        full_set.data = np.vstack((full_set.data, data_new.data))
-    full_set.targets = torch.cat((full_set.targets, data_new.targets), 0)
+        train_set.targets = torch.cat([train_set.targets, torch.zeros(len(train_set.targets)).unsqueeze(1)], dim=1)
+        test_set.targets = torch.cat([test_set.targets, torch.zeros(len(test_set.targets)).unsqueeze(1)], dim=1)
+        torch.save(train_set, 'Colored_{}_train.pt'.format(dataset_name))
+        torch.save(test_set, 'Colored_{}_test.pt'.format(dataset_name))
 
-    dis_set = copy.deepcopy(data_new)
-    indices = np.random.choice(len(train_set.targets), len(data_new), replace=False)
-    if isinstance(dis_set.data, type(torch.tensor([]))):
-        dis_set.data = torch.cat((dis_set.data, train_set.data[indices]), 0)
-    else:
-        dis_set.data = np.vstack((dis_set.data, train_set.data[indices]))
-    dis_set.targets = torch.cat((torch.zeros(len(data_new)), torch.ones(len(indices))), 0)
-
-    rng = np.random.RandomState(seed)
-    loader_args = {'num_workers': 0, 'pin_memory': False}
-
-    def _init_fn(worker_id):
-        np.random.seed(int(seed))
-
-    unrotated_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=shuffle,
-                                               worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-    # valid_loader = torch.utils.data.DataLoader(valid_set, batch_size=batch_size, shuffle=False,
-    #                                            worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-    rotated_loader = torch.utils.data.DataLoader(data_new, batch_size=batch_size, shuffle=False,
-                                              worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-
-    full_loader = torch.utils.data.DataLoader(full_set, batch_size=batch_size, shuffle=True,
-                                              worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-    dis_loader = torch.utils.data.DataLoader(dis_set, batch_size=batch_size, shuffle=True,
-                                              worker_init_fn=_init_fn if seed is not None else None, **loader_args)
-
-
-
-
-    return unrotated_loader, rotated_loader, full_loader, dis_loader
-
+# def prepare_colored_mnist(dataset_name = 'mnist',data_num:int =2000, seed: int =1, root: str = './datasets'):
+#     manual_seed(seed)
+#     colored_mnist_dir = os.path.join(root, 'ColoredMNIST')
+#     print('Preparing Colored MNIST')
+#     train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
+#     colored_mnist = train_set
+#     original_mnist = copy.deepcopy(colored_mnist)
+#     # indices = np.random.choice(len(colored_mnist.targets), data_num, replace=False)
+#     # rest_indexes = list(set(range(len(colored_mnist))) - set(indices))
+#     rest_indexes = np.random.choice(len(colored_mnist.targets), data_num, replace=False)
+#     indices = list(set(range(len(colored_mnist))) - set(rest_indexes))
+#     data_colored = []
+#     for one in rest_indexes:
+#         data_colored.append(color_grayscale_arr(colored_mnist.data[one], colored_mnist.targets[one]))
+#     original_mnist.data = colored_mnist.data[indices].unsqueeze(dim=3)
+#     original_mnist.data = original_mnist.data.expand(-1, -1, -1, 3)
+#     original_mnist.targets = colored_mnist.targets[indices]
+#     colored_mnist.data = torch.tensor(np.array(data_colored))
+#     colored_mnist.targets = colored_mnist.targets[rest_indexes]
+#     torch.save(colored_mnist, 'Colored_Mnist_{}.pt'.format(data_num))
+#     torch.save(original_mnist, 'Colored_Mnist_{}_rest.pt'.format(data_num))
+#
+# def get_colored_mnist_loader(dataset_name, data_num: int = 5000,
+#                 seed: int = 1, root: str = './datasets',
+#                 batch_size=128, shuffle=True,
+#                 **dataset_kwargs):
+#     '''
+#
+#     :param dataset_name: Name of dataset to use
+#     :param class_to_replace: If not None, specifies which class to replace completely or partially
+#     :param num_indexes_to_replace: If None, all samples from `class_to_replace` are replaced. Else, only replace
+#                                    `num_indexes_to_replace` samples
+#     :param indexes_to_replace: If not None, denotes the indexes of samples to replace. Only one of class_to_replace and
+#                                indexes_to_replace can be specidied.
+#     :param seed: Random seed to sample the samples to replace and to initialize the data loaders so that they sample
+#                  always in the same order
+#     :param root: Root directory to initialize the dataset
+#     :param batch_size: Batch size of data loader
+#     :param shuffle: Whether train data should be randomly shuffled when loading (test data are never shuffled)
+#     :param dataset_kwargs: Extra arguments to pass to the dataset init.
+#     :return: The train_loader and test_loader
+#     '''
+#     # prepare_colored_mnist(dataset_name, data_num=data_num, seed=seed, root=root)
+#     u_set = torch.load('Colored_Mnist_{}.pt'.format(data_num))
+#     r_set = torch.load('Colored_Mnist_{}_rest.pt'.format(data_num))
+#
+#     full_set = copy.deepcopy(r_set)
+#     full_set.data = torch.cat((full_set.data, u_set.data), 0)
+#     full_set.targets = torch.cat((full_set.targets, u_set.targets), 0)
+#
+#     dis_set = copy.deepcopy(u_set)
+#     indices = np.random.choice(len(r_set.targets), len(u_set), replace=False)
+#     dis_set.data = torch.cat((dis_set.data, r_set.data[indices]), 0)
+#     dis_set.targets = torch.cat((torch.zeros(len(u_set)), torch.ones(len(indices))), 0)
+#
+#     loader_args = {'num_workers': 0, 'pin_memory': False}
+#
+#     def _init_fn(worker_id):
+#         np.random.seed(int(seed))
+#
+#     r_loader = torch.utils.data.DataLoader(r_set, batch_size=batch_size, shuffle=shuffle,
+#                                                  worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#     # valid_loader = torch.utils.data.DataLoader(valid_set, batch_size=batch_size, shuffle=False,
+#     #                                            worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#     u_loader = torch.utils.data.DataLoader(u_set, batch_size=batch_size, shuffle=False,
+#                                                   worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#
+#     full_loader = torch.utils.data.DataLoader(full_set, batch_size=batch_size, shuffle=True,
+#                                               worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#     dis_loader = torch.utils.data.DataLoader(dis_set, batch_size=batch_size, shuffle=True,
+#                                              worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#
+#     return r_loader, u_loader, full_loader, dis_loader
+#
+#
+# def get_small_roated_loader(dataset_name, data_num: int = 5000,
+#                 seed: int = 1, only_mark: bool = False, root: str = './datasets',
+#                 batch_size=128, shuffle=True,
+#                 **dataset_kwargs):
+#     '''
+#
+#     :param dataset_name: Name of dataset to use
+#     :param class_to_replace: If not None, specifies which class to replace completely or partially
+#     :param num_indexes_to_replace: If None, all samples from `class_to_replace` are replaced. Else, only replace
+#                                    `num_indexes_to_replace` samples
+#     :param indexes_to_replace: If not None, denotes the indexes of samples to replace. Only one of class_to_replace and
+#                                indexes_to_replace can be specidied.
+#     :param seed: Random seed to sample the samples to replace and to initialize the data loaders so that they sample
+#                  always in the same order
+#     :param root: Root directory to initialize the dataset
+#     :param batch_size: Batch size of data loader
+#     :param shuffle: Whether train data should be randomly shuffled when loading (test data are never shuffled)
+#     :param dataset_kwargs: Extra arguments to pass to the dataset init.
+#     :return: The train_loader and test_loader
+#     '''
+#     manual_seed(seed)
+#     if root is None:
+#         root = os.path.expanduser('~/data')
+#     train_set, test_set = _DATASETS[dataset_name](root, **dataset_kwargs)
+#     train_set.targets = torch.tensor(train_set.targets)
+#     test_set.targets = torch.tensor(test_set.targets)
+#
+#     fname = '{}_{}_data_small_rotated.pt'.format(dataset_name,data_num)
+#     if not os.path.isfile(fname):
+#         indices = np.random.choice(len(train_set.targets), data_num, replace=False)
+#         tep = copy.deepcopy(train_set)
+#         tep.data = train_set.data[indices]
+#         if isinstance(tep.data, type(torch.tensor([]))):
+#             tep.data = torch.rot90(tep.data, 1, [1,2])
+#         else:
+#             tep.data = np.rot90(tep.data, 1, (1, 2))
+#         tep.targets = train_set.targets[indices]
+#         torch.save(tep, '{}_{}_data_small_rotated.pt'.format(dataset_name,data_num))
+#         rest_indexes = list(set(range(len(train_set)))-set(indices))
+#         train_set.data = train_set.data[rest_indexes]
+#         train_set.targets = train_set.targets[rest_indexes]
+#         torch.save(train_set, '{}_{}_data_small_rest.pt'.format(dataset_name, data_num))
+#
+#     train_set = torch.load('{}_{}_data_small_rest.pt'.format(dataset_name, data_num))
+#     data_new = torch.load('{}_{}_data_small_rotated.pt'.format(dataset_name, data_num))
+#
+#     full_set = copy.deepcopy(train_set)
+#     if isinstance(full_set.data, type(torch.tensor([]))):
+#         full_set.data = torch.cat((full_set.data, data_new.data), 0)
+#     else:
+#         full_set.data = np.vstack((full_set.data, data_new.data))
+#     full_set.targets = torch.cat((full_set.targets, data_new.targets), 0)
+#
+#     dis_set = copy.deepcopy(data_new)
+#     indices = np.random.choice(len(train_set.targets), len(data_new), replace=False)
+#     if isinstance(dis_set.data, type(torch.tensor([]))):
+#         dis_set.data = torch.cat((dis_set.data, train_set.data[indices]), 0)
+#     else:
+#         dis_set.data = np.vstack((dis_set.data, train_set.data[indices]))
+#     dis_set.targets = torch.cat((torch.zeros(len(data_new)), torch.ones(len(indices))), 0)
+#
+#     rng = np.random.RandomState(seed)
+#     loader_args = {'num_workers': 0, 'pin_memory': False}
+#
+#     def _init_fn(worker_id):
+#         np.random.seed(int(seed))
+#
+#     unrotated_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=shuffle,
+#                                                worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#     # valid_loader = torch.utils.data.DataLoader(valid_set, batch_size=batch_size, shuffle=False,
+#     #                                            worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#     rotated_loader = torch.utils.data.DataLoader(data_new, batch_size=batch_size, shuffle=False,
+#                                               worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#
+#     full_loader = torch.utils.data.DataLoader(full_set, batch_size=batch_size, shuffle=True,
+#                                               worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#     dis_loader = torch.utils.data.DataLoader(dis_set, batch_size=batch_size, shuffle=True,
+#                                               worker_init_fn=_init_fn if seed is not None else None, **loader_args)
+#
+#
+#
+#
+#     return unrotated_loader, rotated_loader, full_loader, dis_loader
 
 if __name__ == '__main__':
     # tep = prepare_ood_colored_mnist('mnist', 0.8)
-    full_colored_mnist('mnist')
+    # full_colored_data('fmnist', ood=True)
+    data_set_name = 'fmnist'
+    colored_train_set = torch.load('Colored_{}_train.pt'.format(data_set_name))
+    colored_test_set = torch.load('Colored_{}_test.pt'.format(data_set_name))
+    # train_set, test_set = _DATASETS[data_set_name]('./datasets')
+    #
+    ood_train_set = torch.load('OOD_Colored_{}_train.pt'.format(data_set_name))
+    ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(data_set_name))
+
+    result = prepare_mixed_data(ood_train_set, colored_train_set, 0.8)
     print('ok')
