@@ -764,11 +764,18 @@ def prepare_ood_colored_mnist(dataset_name = 'mnist',p:float =0.8, seed: int =1,
     manual_seed(seed)
     colored_mnist_dir = os.path.join(root, 'ColoredMNIST')
     print('Preparing Colored MNIST')
-    train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
-    train_colored = torch.load('Colored_Mnist_train.pt')
-    test_colored = torch.load('Colored_Mnist_test.pt')
-    mixed_train = prepare_mixed_data(train_set, train_colored, p)
-    mixed_test = prepare_mixed_data(test_set, test_colored, p)
+    # train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
+    # train_colored = torch.load('Colored_Mnist_train.pt')
+    # test_colored = torch.load('Colored_Mnist_test.pt')
+
+    colored_train_set = torch.load('Colored_{}_train.pt'.format(dataset_name))
+    colored_test_set = torch.load('Colored_{}_test.pt'.format(dataset_name))
+
+    ood_train_set = torch.load('OOD_Colored_{}_train.pt'.format(dataset_name))
+    ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(dataset_name))
+
+    mixed_train = prepare_mixed_data(ood_train_set, colored_train_set, p)
+    mixed_test = prepare_mixed_data(ood_test_set, colored_test_set, p)
     # torch.save(mixed_train, 'Mixed_Mnist_train_{}.pt'.format(p))
     # torch.save(mixed_test, 'Mixed_Mnist_test_{}.pt'.format(p))
     return mixed_train, mixed_test
@@ -779,6 +786,7 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
 
     train_colored = []
     test_colored = []
+
     for one in range(len(train_set)):
         print("{}/{}".format(one, len(train_set)))
         if ood:
@@ -789,7 +797,7 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
     for one in range(len(test_set)):
         print("{}/{}".format(one, len(test_set)))
         if ood:
-            train_colored.append(random_color_grayscale_arr(test_set.data[one]))
+            test_colored.append(random_color_grayscale_arr(test_set.data[one]))
         else:
             test_colored.append(color_grayscale_arr(test_set.data[one], test_set.targets[one]))
 
@@ -801,7 +809,7 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
     if ood:
         train_set.targets = torch.cat([train_set.targets, torch.ones(len(train_set.targets)).unsqueeze(1)], dim=1)
         test_set.targets = torch.cat([test_set.targets, torch.ones(len(test_set.targets)).unsqueeze(1)], dim=1)
-        torch.save(train_set, 'OOD_Colored_{}_train.pt'.format(dataset_name))
+        # torch.save(train_set, 'OOD_Colored_{}_train.pt'.format(dataset_name))
         torch.save(test_set, 'OOD_Colored_{}_test.pt'.format(dataset_name))
     else:
         train_set.targets = torch.cat([train_set.targets, torch.zeros(len(train_set.targets)).unsqueeze(1)], dim=1)
@@ -970,14 +978,17 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
 
 if __name__ == '__main__':
     # tep = prepare_ood_colored_mnist('mnist', 0.8)
-    # full_colored_data('fmnist', ood=True)
-    data_set_name = 'fmnist'
-    colored_train_set = torch.load('Colored_{}_train.pt'.format(data_set_name))
-    colored_test_set = torch.load('Colored_{}_test.pt'.format(data_set_name))
-    # train_set, test_set = _DATASETS[data_set_name]('./datasets')
+    full_colored_data('fmnist', ood=True)
+    full_colored_data('fmnist', ood=False)
+    # full_colored_data('mnist', ood=True)
+    # full_colored_data('mnist', ood=False)
+    # data_set_name = 'fmnist'
+    # colored_train_set = torch.load('Colored_{}_train.pt'.format(data_set_name))
+    # colored_test_set = torch.load('Colored_{}_test.pt'.format(data_set_name))
+    # # train_set, test_set = _DATASETS[data_set_name]('./datasets')
+    # #
+    # ood_train_set = torch.load('OOD_Colored_{}_train.pt'.format(data_set_name))
+    # ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(data_set_name))
     #
-    ood_train_set = torch.load('OOD_Colored_{}_train.pt'.format(data_set_name))
-    ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(data_set_name))
-
-    result = prepare_mixed_data(ood_train_set, colored_train_set, 0.8)
+    # result = prepare_mixed_data(ood_train_set, colored_train_set, 0.8)
     print('ok')

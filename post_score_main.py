@@ -61,7 +61,7 @@ parser.add_argument('--gpu', type=int, default=None)
 parser.add_argument('--plot', type=str2bool, default=False)
 parser.add_argument('--save_numpy_log', type=str2bool, default=False)
 parser.add_argument('--thre_init', type=float, default=-10000.0)
-parser.add_argument('--thre_cls', type=float, default=0.5)
+parser.add_argument('--thre_cls', type=float, default=1.5)
 parser.add_argument('--gamma', type=float, default=1.0)
 parser.add_argument('--sparse', type=float, default=0.1)
 parser.add_argument('--lambda_lasso', type=float, default=0.1,help='group lasso loss weight')
@@ -325,9 +325,13 @@ for epoch in range(args.epochs):
     _avg_fea_list = []
     data_loss_increase_p = []
     ood_loss_increase_p = []
+    success_p = []
 
     batch_size = int(args.batch_size)
     mlp.train()
+
+    loss_best_devide_partio = []
+
     for edx, env in enumerate(envs[:2]):
       x, y = next(iter(env["loader"]))
       x = x.cuda()
@@ -382,7 +386,6 @@ for epoch in range(args.epochs):
     loss_lasso=0.0
     loss_each = torch.cat([loss1, loss2],dim=0)
     domain_each = torch.cat([envs[0]["domain_label"], envs[1]["domain_label"]], dim=0)
-   
     loss = args.erm_amount * loss_each.mean()    
    
     #****************************Regularization1: REX Pelnalty)***************************
@@ -405,16 +408,32 @@ for epoch in range(args.epochs):
     loss_ce_list.append(loss_each.data.cpu())
     if train_los_pre != None:
       train_los_pre = train_los_pre.mean().cuda()
-      w1 = (loss_each < args.thre_cls * train_los_pre).float()
+
+      loss_avg_ood = torch.sum(loss_each*domain_each)/torch.sum(domain_each)
+      loss_avg_id = torch.sum(loss_each*(1-domain_each))/torch.sum(1-domain_each)
+      loss_devide = (loss_avg_ood+loss_avg_id)/2
+      loss_avg = torch.mean(loss_each).detach()
+      loss_current_partio = loss_devide/loss_avg
+      loss_before_partio = loss_devide/train_los_pre
+      loss_best_devide_partio.append(loss_devide.cpu().detach().numpy().tolist())
+      w1 = (loss_each < args.thre_cls * loss_avg).float()
       # print(w1.sum()/w1.numel())
-      loss_increse_num = w1.sum()
+
+      loss_increse_num = (1-w1).sum()
       data_num = w1.numel()
       ood_num = domain_each.sum()
-      bingo = w1 * domain_each
+      bingo = (1-w1) * domain_each
       tep = loss_increse_num / data_num * 100
       data_loss_increase_p.append(tep.tolist())
       tep = bingo.sum() / ood_num * 100
       ood_loss_increase_p.append(tep.tolist())
+      tep = bingo.sum() / loss_increse_num *100
+      success_p.append(tep.tolist())
+      wandb.log({"loss_distance": loss_devide,
+                 "loss_current_partio": loss_current_partio,
+                 "loss_before_partio": loss_before_partio,
+                 "loss_guess_right_ratio": tep.tolist()})
+
     if args.cox:
       if train_los_pre != None:
         # w2=((loss_each-args.thre_cls*train_los_pre)/(loss_each.mean()))
@@ -449,6 +468,8 @@ for epoch in range(args.epochs):
     "epoch": epoch,
     "loss increase possibility": np.average(data_loss_increase_p),
     "ood loss increase possibility": np.average(ood_loss_increase_p),
+    "loss_distance": np.average(loss_best_devide_partio),
+    "effective ratio": np.average(success_p)
   }
 
   ood_score_collection = np.array(ood_score_collection)
