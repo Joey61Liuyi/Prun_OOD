@@ -778,7 +778,7 @@ def prepare_ood_colored_mnist(dataset_name = 'mnist',p:float =0.8, seed: int =1,
     mixed_test = prepare_mixed_data(ood_test_set, colored_test_set, p)
     # torch.save(mixed_train, 'Mixed_Mnist_train_{}.pt'.format(p))
     # torch.save(mixed_test, 'Mixed_Mnist_test_{}.pt'.format(p))
-    return mixed_train, mixed_test
+    return mixed_train, mixed_test, ood_test_set, colored_test_set
 
 def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: bool = False):
     colored_mnist_dir = os.path.join(root, dataset_name)

@@ -40,7 +40,7 @@ parser.add_argument('--steps', type=int, default=501)
 parser.add_argument('--fine_tune', type=bool, default=False)
 parser.add_argument('--batch_size', type=int, default=5000)
 parser.add_argument('--train_set_size', type=int, default=50000)
-parser.add_argument('--eval_interval', type=int, default=10)
+parser.add_argument('--eval_interval', type=int, default=1)
 parser.add_argument('--print_eval_intervals', type=str2bool, default=True)
 parser.add_argument('--polar', type=bool, default=True)
 parser.add_argument('--train_env_1__color_noise', type=float, default=0.9)
@@ -193,14 +193,21 @@ def create_env(p, val=False, batch_size = 5000):
   # if os.path.exists('Mixed_Mnist_train_{}.pt'.format(p)):
   #   pass
   # else:
-  mixed_train, mixed_test = prepare_ood_colored_mnist('mnist', p)
+  mixed_train, mixed_test, original_test_set, colored_test_set = prepare_ood_colored_mnist('mnist', p)
   if val:
+    loader_id = torch.utils.data.DataLoader(colored_test_set, len(mixed_test), shuffle=True)
+    loader_ood = torch.utils.data.DataLoader(original_test_set, len(mixed_test), shuffle=True)
     loader = torch.utils.data.DataLoader(mixed_test, len(mixed_test), shuffle=True)
+    return {
+      "loader": loader,
+      "loader_id": loader_id,
+      "loader_ood": loader_ood
+    }
   else:
     loader = torch.utils.data.DataLoader(mixed_train, batch_size, shuffle=True)
-  return {
-    "loader": loader
-  }
+    return {
+      "loader": loader
+    }
 
 def make_environment(images, labels, e):
   def torch_bernoulli(p, size):
@@ -494,6 +501,24 @@ for epoch in range(args.epochs):
       envs[2]['nll'] =  mean_nll(logits,y)
       envs[2]['acc'] =  mean_accuracy(logits,y)
       test_acc = envs[2]['acc']*args.batch_size / envs[2]["loader"].batch_size
+
+      x, y = next(iter(envs[2]["loader_id"]))
+      x = x.cuda()
+      y = y.cuda().long()
+      y, domain_label = torch.split(y, 1, dim=1)
+      logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
+      envs[2]['nll_id'] = mean_nll(logits, y)
+      envs[2]['acc_id'] = mean_accuracy(logits, y)
+      id_acc = envs[2]['acc_id']*args.batch_size / envs[2]["loader"].batch_size
+
+      x, y = next(iter(envs[2]["loader_ood"]))
+      x = x.cuda()
+      y = y.cuda().long()
+      y, domain_label = torch.split(y, 1, dim=1)
+      logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
+      envs[2]['nll_ood'] = mean_nll(logits, y)
+      envs[2]['acc_ood'] = mean_accuracy(logits, y)
+      ood_acc = envs[2]['acc_ood']*args.batch_size / envs[2]["loader"].batch_size
     train_acc_scalar = train_acc.detach().cpu().numpy()
     test_acc_scalar = test_acc.detach().cpu().numpy()
     if (train_acc_scalar >= test_acc_scalar) and (test_acc_scalar > highest_test_acc):
@@ -511,7 +536,9 @@ for epoch in range(args.epochs):
         "epoch": epoch,
         "train_loss": train_nll,
         "train_acc": train_acc,
-        "test_acc": test_acc
+        "test_acc": test_acc,
+        "id_acc": id_acc,
+        "ood_acc": ood_acc
       }
       wandb.log(info_dict)
 
