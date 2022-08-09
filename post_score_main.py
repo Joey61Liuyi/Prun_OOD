@@ -31,7 +31,7 @@ parser = argparse.ArgumentParser(description='Colored MNIST')
 parser.add_argument('--hidden_dim', type=int, default=256)
 parser.add_argument('--l2_regularizer_weight', type=float,default=0.001)
 parser.add_argument('--lr', type=float, default=0.1)
-parser.add_argument('--scheduler', type=list, default=[60,120])
+parser.add_argument('--scheduler', type=list, default=[60, 120])
 parser.add_argument('--epochs', type=int, default=161)
 parser.add_argument('--fine_tune_epochs', type=int, default=121)
 parser.add_argument('--penalty_anneal_iters', type=int, default=100)
@@ -52,9 +52,9 @@ parser.add_argument('--erm_amount', type=float, default=1.0)
 
 parser.add_argument('--early_loss_mean', type=str2bool, default=True)
 
-parser.add_argument('--rex', type=str2bool, default=True)
+parser.add_argument('--rex', type=str2bool, default=False)
 parser.add_argument('--mse', type=str2bool, default=False)
-parser.add_argument('--cox', type=str2bool, default=True)
+parser.add_argument('--cox', type=str2bool, default=False)
 parser.add_argument('--sim', type=str2bool, default=True)
 parser.add_argument('--bn', type=str2bool, default=False)
 parser.add_argument('--gpu', type=int, default=None)
@@ -174,7 +174,7 @@ def penalty(logits, y):
   else:
     scale = torch.tensor(1.).requires_grad_()
   
-  loss =mean_nll(logits * scale, y.squeeze())
+  loss = mean_nll(logits * scale, y.squeeze())
   grad = autograd.grad([loss.mean()], [scale], create_graph=True)[0]
   return torch.sum(grad**2)
 # Train loop
@@ -300,13 +300,18 @@ env1 = create_env(p1, False, args.batch_size)
 env2 = create_env(p2, False, args.batch_size)
 env_test = create_env(p_test, True, args.batch_size)
 envs = [env1, env2, env_test]
-if args.bn == False and args.cox == True:
-  name = 'Ours+REX'
-elif args.bn == True and args.cox == False:
-  name = 'REX'
 
-elif args.bn == False and args.cox == False:
-  name = 'No pruning'
+
+
+# if args.bn == False and args.cox == True:
+#   name = 'Ours+REX'
+# elif args.bn == True and args.cox == False:
+#   name = 'REX'
+# elif args.bn == False and args.cox == False:
+#   name = 'No pruning'
+
+if args.rex == False and args.bn == False and args.cox == False:
+  name = 'ERM'
 
 wandb.init(project = "Prune_OOD", entity='peilab', name = name)
 
@@ -323,7 +328,6 @@ for epoch in range(args.epochs):
   loss_ce_list=[]  
   id_score_collection = []
   ood_score_collection = []
-
   for step in range(len(env1['loader'])):
     n =step
     _mask_list = []

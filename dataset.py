@@ -809,7 +809,7 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
     if ood:
         train_set.targets = torch.cat([train_set.targets, torch.ones(len(train_set.targets)).unsqueeze(1)], dim=1)
         test_set.targets = torch.cat([test_set.targets, torch.ones(len(test_set.targets)).unsqueeze(1)], dim=1)
-        # torch.save(train_set, 'OOD_Colored_{}_train.pt'.format(dataset_name))
+        torch.save(train_set, 'OOD_Colored_{}_train.pt'.format(dataset_name))
         torch.save(test_set, 'OOD_Colored_{}_test.pt'.format(dataset_name))
     else:
         train_set.targets = torch.cat([train_set.targets, torch.zeros(len(train_set.targets)).unsqueeze(1)], dim=1)
