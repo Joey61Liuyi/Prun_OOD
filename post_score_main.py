@@ -33,7 +33,7 @@ def get_gpu_memory():
   for one in range(len(tep)):
     gpu_dict[one] = int(tep[one])
   gpu_id = sorted(gpu_dict.items(), key=lambda item: item[1])[-1][0]
-  os.environ.setdefault('CUDA_VISIBLE_DEVICES', gpu_id)
+  os.environ.setdefault('CUDA_VISIBLE_DEVICES', str(gpu_id))
 
 get_gpu_memory()
 use_cuda = torch.cuda.is_available()
@@ -67,6 +67,7 @@ parser.add_argument('--rex', type=str2bool, default=False)
 parser.add_argument('--mse', type=str2bool, default=False)
 parser.add_argument('--cox', type=str2bool, default=False)
 parser.add_argument('--irm', type=str2bool, default=False)
+parser.add_argument('--dro', type=str2bool, default=False)
 
 parser.add_argument('--sim', type=str2bool, default=True)
 parser.add_argument('--bn', type=str2bool, default=False)
@@ -99,25 +100,23 @@ elif (args.bn == True) and (args.cox == False):
   args.savepath = 'normal_sparse.pth.tar'
   args.savepath = 'normal_pruned.pth.tar'
 
-if args.rex == False and args.bn == False and args.cox == False and args.irm == False:
+if args.irm == True:
+  last_name = 'IRM'
+elif args.rex == True:
+  last_name = 'REX'
+elif args.dro == True:
+  last_name = 'DRO'
+else:
+  last_name = ''
+if args.bn == True:
+  first_name = 'MOD'
+elif args.cox == True:
+  first_name = 'SFP'
+else:
+  first_name = ''
+name = first_name+last_name
+if name =='':
   name = 'ERM'
-elif args.rex == False and args.bn == True and args.cox == False and args.irm == False:
-  name = 'MRM'
-elif args.rex == False and args.bn == False and args.cox == True and args.irm == False:
-  name = 'SFP'
-
-elif args.rex == True and args.bn == False and args.cox == False and args.irm == False:
-  name = 'REX'
-elif args.rex == True and args.bn == True and args.cox == False and args.irm == False:
-  name = 'MODREX'
-elif args.rex == True and args.bn == False and args.cox == True and args.irm == False:
-  name = 'SFPREX'
-elif args.rex == False and args.bn == False and args.cox == False and args.irm == True:
-  name = 'IRM'
-elif args.rex == False and args.bn == True and args.cox == False and args.irm == True:
-  name = 'MODIRM'
-elif args.rex == False and args.bn == False and args.cox == True and args.irm == True:
-  name = 'SFPIRM'
 
 root='./check_point'
 logger_file = os.path.join(root,args.logpath)
@@ -325,7 +324,7 @@ optimizer = optim.SGD(mlp.parameters(), lr=args.lr, momentum=0.9)
 # optimizer = optim.Adam(mlp.parameters(), lr=args.lr)
 scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.1)
 pretty_print('step', 'train nll', 'train acc', 'rex penalty', 'irmv1 penalty', 'test acc')
-train_los_pre=None
+# train_los_pre=None
 
 p1 = args.train_env_1__color_noise
 p2 = args.train_env_2__color_noise
@@ -359,7 +358,7 @@ for epoch in range(args.epochs):
   
   top1 = AverageMeter()
   top5 = AverageMeter()
-  loss_ce_list=[]  
+  # loss_ce_list=[]
   id_score_collection = []
   ood_score_collection = []
   biased_loss = 0
@@ -431,19 +430,18 @@ for epoch in range(args.epochs):
     else:
       weight_norm = torch.tensor(0.)
     for w in mlp.parameters():
-      weight_norm += w.norm().pow(2)    
+      weight_norm += w.norm().pow(2)
+
     loss1 = envs[0]['nll']
     loss2 = envs[1]['nll']
     loss = 0.0
     loss_lasso=0.0
     loss_each = torch.cat([loss1, loss2],dim=0)
     domain_each = torch.cat([envs[0]["domain_label"], envs[1]["domain_label"]], dim=0)
-    loss = args.erm_amount * loss_each.mean()+args.l2_regularizer_weight*weight_norm
-   
+    loss = args.erm_amount * loss_each.mean()
     #****************************Regularization1: REX Pelnalty)***************************
     irmv1_penalty = torch.stack([envs[0]['penalty'], envs[1]['penalty']]).mean()
     #penalty_weight = (args.penalty_weight if epoch >= args.penalty_anneal_iters else 1.0)
-
 
     if args.mse:
       rex_penalty = (loss1.mean() - loss2.mean()) ** 2
@@ -464,13 +462,17 @@ for epoch in range(args.epochs):
       #   # Rescale the entire loss to keep gradients in a reasonable range
       #   loss /= penalty_weight
       loss *=1.5
-    else:
-      pass
+
+    elif args.dro:
+      q = (0.01 * loss_each).exp()
+      q /= q.sum()
+      q = q.detach()
+      loss = torch.dot(loss_each, q)
 
 
-   
+
     #****************************Regularization2: Complex Pelnalty)***************************
-    loss_ce_list.append(loss_each.data.cpu())
+    # loss_ce_list.append(loss_each.data.cpu())
 
     # train_los_pre = train_los_pre.mean().cuda()
 
@@ -481,8 +483,7 @@ for epoch in range(args.epochs):
     # loss_current_partio = loss_devide/loss_avg
     # loss_before_partio = loss_devide/train_los_pre
     # loss_best_devide_partio.append(loss_devide.cpu().detach().numpy().tolist())
-    # w1 = (loss_each < args.thre_cls * loss_avg).float()
-    w1 = (loss_each < loss_each.sort()[0][int(args.thre_cls * loss_each.numel())]).float()
+    # w1 = (loss_each < args.thre_cls * loss_avg).float(
 
       # print(w1.sum()/w1.numel())
 
@@ -508,6 +509,7 @@ for epoch in range(args.epochs):
     if args.cox:
       # if train_los_pre != None:
         # w2=((loss_each-args.thre_cls*train_los_pre)/(loss_each.mean()))
+      w1 = (loss_each < loss_each.sort()[0][int(args.thre_cls * loss_each.numel())]).float()
       w2=50
       w=w1*w2
       for ilasso in range(len(lasso_list)):
@@ -517,15 +519,14 @@ for epoch in range(args.epochs):
         # mistake 2:w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each)) the denominator lost .mean()
 
       loss += args.lambda_lasso*loss_lasso
-
     #****************************Regularization3: Sparse Pelnalty)*****************
-    
     if args.bn:
       w2 = 50
       for ilasso in range(len(lasso_list)):
           loss_lasso=loss_lasso + (lasso_list[ilasso]*w2).mean()
       loss += args.lambda_lasso*loss_lasso
-    
+
+    loss += args.l2_regularizer_weight * weight_norm
     #****************************************************************************
     unbiased_loss += (loss_each*ood_label_total).sum().detach()
     unbiased_data_num += ood_label_total.sum()
@@ -537,7 +538,7 @@ for epoch in range(args.epochs):
     #updateSaliencyBlock(0.00001, mlp)
     optimizer.step()
   scheduler.step()
-  train_los_pre=torch.cat(loss_ce_list,dim=0)
+  # train_los_pre=torch.cat(loss_ce_list,dim=0)
 
   info_dict = {
     "epoch": epoch,
