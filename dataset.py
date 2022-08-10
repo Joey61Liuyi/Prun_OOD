@@ -694,9 +694,6 @@ def get_roated_loader(dataset_name, degree_to_replace: int = None, num_indexes_t
     full_loader = torch.utils.data.DataLoader(full_set, batch_size=batch_size, shuffle=True,
                                               worker_init_fn=_init_fn if seed is not None else None, **loader_args)
 
-
-
-
     return train_loader,  test_loader, r_set_loader, full_loader
 
 def color_grayscale_arr(arr, label):
@@ -978,8 +975,8 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
 
 if __name__ == '__main__':
     # tep = prepare_ood_colored_mnist('mnist', 0.8)
-    full_colored_data('fmnist', ood=True)
-    full_colored_data('fmnist', ood=False)
+    full_colored_data('mnist', ood=True)
+    full_colored_data('mnist', ood=False)
     # full_colored_data('mnist', ood=True)
     # full_colored_data('mnist', ood=False)
     # data_set_name = 'fmnist'

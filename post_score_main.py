@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import torch
+import re
 import torch.nn.functional as F
 from torch import nn, optim, autograd
 import torch.utils.data as Data
@@ -25,17 +26,27 @@ from prun import prune_while_training
 def str2bool(v):
   return v.lower() in ("yes", "true", "t", "1")
 
+def get_gpu_memory():
+  free_gpu_info = os.popen('nvidia-smi -q -d Memory | grep -A4 GPU | grep Free').read()
+  tep = re.findall('.*: (.*) MiB', free_gpu_info)
+  gpu_dict = {}
+  for one in range(len(tep)):
+    gpu_dict[one] = int(tep[one])
+  gpu_id = sorted(gpu_dict.items(), key=lambda item: item[1])[-1][0]
+  os.environ.setdefault('CUDA_VISIBLE_DEVICES', gpu_id)
+
+get_gpu_memory()
 use_cuda = torch.cuda.is_available()
-manual_seed(61)
+manual_seed(0)
 parser = argparse.ArgumentParser(description='Colored MNIST')
 parser.add_argument('--hidden_dim', type=int, default=256)
 parser.add_argument('--l2_regularizer_weight', type=float,default=0.001)
-parser.add_argument('--lr', type=float, default=0.1)
-parser.add_argument('--scheduler', type=list, default=[60, 120])
-parser.add_argument('--epochs', type=int, default=161)
+parser.add_argument('--lr', type=float, default=0.01)
+parser.add_argument('--scheduler', type=list, default=[10, 15])
+parser.add_argument('--epochs', type=int, default=30)
 parser.add_argument('--fine_tune_epochs', type=int, default=121)
 parser.add_argument('--penalty_anneal_iters', type=int, default=100)
-parser.add_argument('--penalty_weight', type=float, default=10000.0)
+parser.add_argument('--penalty_weight', type=float, default=91257.0)
 parser.add_argument('--steps', type=int, default=501)
 parser.add_argument('--fine_tune', type=bool, default=False)
 parser.add_argument('--batch_size', type=int, default=5000)
@@ -46,7 +57,7 @@ parser.add_argument('--polar', type=bool, default=True)
 parser.add_argument('--train_env_1__color_noise', type=float, default=0.9)
 parser.add_argument('--train_env_2__color_noise', type=float, default=0.8)
 #parser.add_argument('--val_env__color_noise', type=float, default=0.1)
-parser.add_argument('--test_env__color_noise', type=float, default=0.2)
+parser.add_argument('--test_env__color_noise', type=float, default=0.0)
 
 parser.add_argument('--erm_amount', type=float, default=1.0)
 
@@ -55,13 +66,15 @@ parser.add_argument('--early_loss_mean', type=str2bool, default=True)
 parser.add_argument('--rex', type=str2bool, default=False)
 parser.add_argument('--mse', type=str2bool, default=False)
 parser.add_argument('--cox', type=str2bool, default=False)
+parser.add_argument('--irm', type=str2bool, default=False)
+
 parser.add_argument('--sim', type=str2bool, default=True)
 parser.add_argument('--bn', type=str2bool, default=False)
 parser.add_argument('--gpu', type=int, default=None)
 parser.add_argument('--plot', type=str2bool, default=False)
 parser.add_argument('--save_numpy_log', type=str2bool, default=False)
 parser.add_argument('--thre_init', type=float, default=-10000.0)
-parser.add_argument('--thre_cls', type=float, default=1.5)
+parser.add_argument('--thre_cls', type=float, default=0.8)
 parser.add_argument('--gamma', type=float, default=1.0)
 parser.add_argument('--sparse', type=float, default=0.1)
 parser.add_argument('--lambda_lasso', type=float, default=0.1,help='group lasso loss weight')
@@ -85,6 +98,27 @@ elif (args.bn == True) and (args.cox == False):
   args.logpath = 'normal.txt'
   args.savepath = 'normal_sparse.pth.tar'
   args.savepath = 'normal_pruned.pth.tar'
+
+if args.rex == False and args.bn == False and args.cox == False and args.irm == False:
+  name = 'ERM'
+elif args.rex == False and args.bn == True and args.cox == False and args.irm == False:
+  name = 'MRM'
+elif args.rex == False and args.bn == False and args.cox == True and args.irm == False:
+  name = 'SFP'
+
+elif args.rex == True and args.bn == False and args.cox == False and args.irm == False:
+  name = 'REX'
+elif args.rex == True and args.bn == True and args.cox == False and args.irm == False:
+  name = 'MODREX'
+elif args.rex == True and args.bn == False and args.cox == True and args.irm == False:
+  name = 'SFPREX'
+elif args.rex == False and args.bn == False and args.cox == False and args.irm == True:
+  name = 'IRM'
+elif args.rex == False and args.bn == True and args.cox == False and args.irm == True:
+  name = 'MODIRM'
+elif args.rex == False and args.bn == False and args.cox == True and args.irm == True:
+  name = 'SFPIRM'
+
 root='./check_point'
 logger_file = os.path.join(root,args.logpath)
 logger=logging.getLogger()
@@ -288,7 +322,8 @@ else:
 
 criterion = nn.CrossEntropyLoss(reduction='none')
 optimizer = optim.SGD(mlp.parameters(), lr=args.lr, momentum=0.9)
-scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.1,last_epoch=-1)
+# optimizer = optim.Adam(mlp.parameters(), lr=args.lr)
+scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.1)
 pretty_print('step', 'train nll', 'train acc', 'rex penalty', 'irmv1 penalty', 'test acc')
 train_los_pre=None
 
@@ -310,8 +345,7 @@ envs = [env1, env2, env_test]
 # elif args.bn == False and args.cox == False:
 #   name = 'No pruning'
 
-if args.rex == False and args.bn == False and args.cox == False:
-  name = 'ERM'
+
 
 wandb.init(project = "Prune_OOD", entity='peilab', name = name)
 
@@ -328,6 +362,12 @@ for epoch in range(args.epochs):
   loss_ce_list=[]  
   id_score_collection = []
   ood_score_collection = []
+  biased_loss = 0
+  unbiased_loss = 0
+  biased_data_num = 0
+  unbiased_data_num = 0
+  train_acc_list = []
+
   for step in range(len(env1['loader'])):
     n =step
     _mask_list = []
@@ -359,7 +399,8 @@ for epoch in range(args.epochs):
     
     train_nll = torch.stack([envs[0]['nll'], envs[1]['nll']]).mean()
     train_acc = torch.stack([envs[0]['acc'], envs[1]['acc']]).mean()
-    
+    train_acc_list.append(train_acc.tolist())
+
     for l in range(len(env['_mask_list'])):
       _mask_list.append(torch.cat([envs[0]['_mask_list'][l], envs[1]['_mask_list'][l]],dim=0))
       lasso_list.append(torch.cat([envs[0]['lasso_list'][l], envs[1]['lasso_list'][l]],dim=0))
@@ -397,90 +438,117 @@ for epoch in range(args.epochs):
     loss_lasso=0.0
     loss_each = torch.cat([loss1, loss2],dim=0)
     domain_each = torch.cat([envs[0]["domain_label"], envs[1]["domain_label"]], dim=0)
-    loss = args.erm_amount * loss_each.mean()    
+    loss = args.erm_amount * loss_each.mean()+args.l2_regularizer_weight*weight_norm
    
     #****************************Regularization1: REX Pelnalty)***************************
     irmv1_penalty = torch.stack([envs[0]['penalty'], envs[1]['penalty']]).mean()
-    #penalty_weight = (args.penalty_weight if epoch >= args.penalty_anneal_iters else 1.0)    
-    penalty_weight = 1.0
+    #penalty_weight = (args.penalty_weight if epoch >= args.penalty_anneal_iters else 1.0)
+
+
     if args.mse:
       rex_penalty = (loss1.mean() - loss2.mean()) ** 2
     else:
       rex_penalty = (loss1.mean() - loss2.mean()).abs()
+
     if args.rex:
+      penalty_weight = 1
       loss += penalty_weight * rex_penalty
-    else:
+      if penalty_weight > 1.0:
+        # Rescale the entire loss to keep gradients in a reasonable range
+        loss /= penalty_weight
+    elif args.irm:
+      penalty_weight = 1
+      # penalty_weight = args.penalty_weight if epoch >= args.epochs / 5 else 1
       loss += penalty_weight * irmv1_penalty
-    if penalty_weight > 1.0:
-      # Rescale the entire loss to keep gradients in a reasonable range
-      loss /= penalty_weight
+      # if penalty_weight > 1.0:
+      #   # Rescale the entire loss to keep gradients in a reasonable range
+      #   loss /= penalty_weight
+      loss *=1.5
+    else:
+      pass
+
+
    
     #****************************Regularization2: Complex Pelnalty)***************************
     loss_ce_list.append(loss_each.data.cpu())
-    if train_los_pre != None:
-      train_los_pre = train_los_pre.mean().cuda()
 
-      loss_avg_ood = torch.sum(loss_each*domain_each)/torch.sum(domain_each)
-      loss_avg_id = torch.sum(loss_each*(1-domain_each))/torch.sum(1-domain_each)
-      loss_devide = (loss_avg_ood+loss_avg_id)/2
-      loss_avg = torch.mean(loss_each).detach()
-      loss_current_partio = loss_devide/loss_avg
-      loss_before_partio = loss_devide/train_los_pre
-      loss_best_devide_partio.append(loss_devide.cpu().detach().numpy().tolist())
-      w1 = (loss_each < args.thre_cls * loss_avg).float()
+    # train_los_pre = train_los_pre.mean().cuda()
+
+    # loss_avg_ood = torch.sum(loss_each*domain_each)/torch.sum(domain_each)
+    # loss_avg_id = torch.sum(loss_each*(1-domain_each))/torch.sum(1-domain_each)
+    # loss_devide = (loss_avg_ood+loss_avg_id)/2
+    # loss_avg = torch.mean(loss_each).detach()
+    # loss_current_partio = loss_devide/loss_avg
+    # loss_before_partio = loss_devide/train_los_pre
+    # loss_best_devide_partio.append(loss_devide.cpu().detach().numpy().tolist())
+    # w1 = (loss_each < args.thre_cls * loss_avg).float()
+    w1 = (loss_each < loss_each.sort()[0][int(args.thre_cls * loss_each.numel())]).float()
+
       # print(w1.sum()/w1.numel())
 
-      loss_increse_num = (1-w1).sum()
-      data_num = w1.numel()
-      ood_num = domain_each.sum()
-      bingo = (1-w1) * domain_each
-      tep = loss_increse_num / data_num * 100
-      data_loss_increase_p.append(tep.tolist())
-      tep = bingo.sum() / ood_num * 100
-      ood_loss_increase_p.append(tep.tolist())
-      tep = bingo.sum() / loss_increse_num *100
-      success_p.append(tep.tolist())
-      wandb.log({"loss_distance": loss_devide,
-                 "loss_current_partio": loss_current_partio,
-                 "loss_before_partio": loss_before_partio,
-                 "loss_guess_right_ratio": tep.tolist()})
+      # loss_increse_num = (1-w1).sum()
+      # data_num = w1.numel()
+      # ood_num = domain_each.sum()
+      # bingo = (1-w1) * domain_each
+      # tep = loss_increse_num / data_num * 100
+      # data_loss_increase_p.append(tep.tolist())
+      # tep = bingo.sum() / ood_num * 100
+      # ood_loss_increase_p.append(tep.tolist())
+      # tep = bingo.sum() / loss_increse_num *100
+      # success_p.append(tep.tolist())
+
+
+
+      #
+      # wandb.log({"loss_distance": loss_devide,
+      #            "loss_current_partio": loss_current_partio,
+      #            "loss_before_partio": loss_before_partio,
+      #            "loss_guess_right_ratio": tep.tolist()})
 
     if args.cox:
-      if train_los_pre != None:
+      # if train_los_pre != None:
         # w2=((loss_each-args.thre_cls*train_los_pre)/(loss_each.mean()))
-        w2=10
-        w=w1*w2
-        for ilasso in range(len(lasso_list)):
-          loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()
-          # why 'w2' is wrong? 
-          #iter, layer, avglasso, loss 3 0 tensor(1478.3196, device='cuda:0', grad_fn=<MeanBackward0>) tensor(4.1995, device='cuda:0', grad_fn=<MeanBackward0>) tensor(0.0028, device='cuda:0')
-          # mistake 2:w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each)) the denominator lost .mean()
-          
-        loss += args.lambda_lasso*loss_lasso
+      w2=50
+      w=w1*w2
+      for ilasso in range(len(lasso_list)):
+        loss_lasso=loss_lasso+(lasso_list[ilasso]*w).mean()
+        # why 'w2' is wrong?
+        #iter, layer, avglasso, loss 3 0 tensor(1478.3196, device='cuda:0', grad_fn=<MeanBackward0>) tensor(4.1995, device='cuda:0', grad_fn=<MeanBackward0>) tensor(0.0028, device='cuda:0')
+        # mistake 2:w2=((loss_each - args.thre_cls*train_los_pre)/(loss_each)) the denominator lost .mean()
+
+      loss += args.lambda_lasso*loss_lasso
 
     #****************************Regularization3: Sparse Pelnalty)*****************
     
     if args.bn:
+      w2 = 50
       for ilasso in range(len(lasso_list)):
-          loss_lasso=loss_lasso + lasso_list[ilasso].mean()
-      loss += 10*args.lambda_lasso*loss_lasso
+          loss_lasso=loss_lasso + (lasso_list[ilasso]*w2).mean()
+      loss += args.lambda_lasso*loss_lasso
     
     #****************************************************************************
-    
+    unbiased_loss += (loss_each*ood_label_total).sum().detach()
+    unbiased_data_num += ood_label_total.sum()
+    biased_loss += (loss_each*(1-ood_label_total)).sum().detach()
+    biased_data_num += (1-ood_label_total).sum()
+
     optimizer.zero_grad()
     loss.backward()
     #updateSaliencyBlock(0.00001, mlp)
     optimizer.step()
-    scheduler.step()
-
+  scheduler.step()
   train_los_pre=torch.cat(loss_ce_list,dim=0)
 
   info_dict = {
     "epoch": epoch,
+    "lr": optimizer.param_groups[0]['lr'],
     "loss increase possibility": np.average(data_loss_increase_p),
     "ood loss increase possibility": np.average(ood_loss_increase_p),
     "loss_distance": np.average(loss_best_devide_partio),
-    "effective ratio": np.average(success_p)
+    "effective ratio": np.average(success_p),
+    "avg_biased_loss": biased_loss/biased_data_num,
+    "avg_unbiased_loss": unbiased_loss/unbiased_data_num,
+    "train_acc": np.mean(train_acc_list)
   }
 
   ood_score_collection = np.array(ood_score_collection)
@@ -497,14 +565,14 @@ for epoch in range(args.epochs):
   if epoch % args.eval_interval == 0:
     mlp.eval()
     with torch.no_grad():
-      x, y = next(iter(envs[2]["loader"]))
-      x = x.cuda()
-      y = y.cuda().long()
-      y, domain_label = torch.split(y, 1,dim=1)
-      logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
-      envs[2]['nll'] =  mean_nll(logits,y)
-      envs[2]['acc'] =  mean_accuracy(logits,y)
-      test_acc = envs[2]['acc']*args.batch_size / envs[2]["loader"].batch_size
+      # x, y = next(iter(envs[2]["loader"]))
+      # x = x.cuda()
+      # y = y.cuda().long()
+      # y, domain_label = torch.split(y, 1,dim=1)
+      # logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
+      # envs[2]['nll'] =  mean_nll(logits,y)
+      # envs[2]['acc'] =  mean_accuracy(logits,y)
+      # test_acc = envs[2]['acc']*args.batch_size / envs[2]["loader"].batch_size
 
       x, y = next(iter(envs[2]["loader_id"]))
       x = x.cuda()
@@ -524,10 +592,10 @@ for epoch in range(args.epochs):
       envs[2]['acc_ood'] = mean_accuracy(logits, y)
       ood_acc = envs[2]['acc_ood']*args.batch_size / envs[2]["loader"].batch_size
     train_acc_scalar = train_acc.detach().cpu().numpy()
-    test_acc_scalar = test_acc.detach().cpu().numpy()
-    if (train_acc_scalar >= test_acc_scalar) and (test_acc_scalar > highest_test_acc):
-      highest_test_acc = test_acc_scalar
-    all_test_accs[epoch, step] = test_acc.detach().cpu().numpy()
+    # test_acc_scalar = test_acc.detach().cpu().numpy()
+    # if (train_acc_scalar >= test_acc_scalar) and (test_acc_scalar > highest_test_acc):
+    #   highest_test_acc = test_acc_scalar
+    # all_test_accs[epoch, step] = test_acc.detach().cpu().numpy()
     
     if args.print_eval_intervals:
       # pretty_print(
@@ -538,9 +606,9 @@ for epoch in range(args.epochs):
       # )
       info_dict = {
         "epoch": epoch,
-        "train_loss": train_nll,
-        "train_acc": train_acc,
-        "test_acc": test_acc,
+        # "train_loss": train_nll,
+        # "train_acc": train_acc,
+        # "test_acc": test_acc,
         "id_acc": id_acc,
         "ood_acc": ood_acc
       }
@@ -550,7 +618,7 @@ for epoch in range(args.epochs):
            "Train Loss {train_nll:.3f}\t"
            "Train Acc@1 {train_acc:.3f}\t"
            "test_acc Acc@1 {test_acc:.3f}\t"
-           .format(epoch, train_nll = train_nll, train_acc=train_acc, test_acc=test_acc))
+           .format(epoch, train_nll = train_nll, train_acc=train_acc, test_acc=ood_acc))
       
       if args.plot or args.save_numpy_log:
         all_train_nlls[epoch, step] = train_nll.detach().cpu().numpy()
@@ -563,6 +631,9 @@ torch.save(sparse_model,os.path.join(root,args.savepath))
 x, y = next(iter(envs[1]["loader"]))
 pruned_model = prune_while_training(sparse_model, num_classes=num_classes, data = x.cpu())
 torch.save(pruned_model,os.path.join(root,args.pruned_savepath))
+
+
+
 '''
 freeze_mask(mlp)
 ft_optimizer = optim.SGD(mlp.parameters(), lr=0.01, momentum=0.9)
@@ -633,67 +704,67 @@ for epoch in range(args.fine_tune_epochs):
            "test_acc Acc@1 {test_acc:.3f}\t"
            .format(epoch, train_nll = train_nll, train_acc=train_acc, test_acc=test_acc))
 '''
-print('highest test acc this run:', highest_test_acc)
-logging.info('highest test acc this run: {}'.format(highest_test_acc))
+# print('highest test acc this run:', highest_test_acc)
+# logging.info('highest test acc this run: {}'.format(highest_test_acc))
 
-final_train_accs.append(train_acc.detach().cpu().numpy())
-final_test_accs.append(test_acc.detach().cpu().numpy())
-highest_test_accs.append(highest_test_acc)
-print('Final train acc (mean/std across on epoch {} so far):')
-print(np.mean(final_train_accs), np.std(final_train_accs))
-logging.info('Final train acc (mean/std across restarts so far): {} / {}'.format(epoch,np.mean(final_train_accs), np.std(final_train_accs)))
+# final_train_accs.append(train_acc.detach().cpu().numpy())
+# final_test_accs.append(test_acc.detach().cpu().numpy())
+# highest_test_accs.append(highest_test_acc)
+# print('Final train acc (mean/std across on epoch {} so far):')
+# print(np.mean(final_train_accs), np.std(final_train_accs))
+# logging.info('Final train acc (mean/std across restarts so far): {} / {}'.format(epoch,np.mean(final_train_accs), np.std(final_train_accs)))
+#
+# print('Final test acc (mean/std across on epoch {} so far):')
+# print(np.mean(final_test_accs), np.std(final_test_accs))
+# logging.info('Final test acc (mean/std across restarts so far): {} / {}'.format(np.mean(final_test_accs), np.std(final_test_accs)))
 
-print('Final test acc (mean/std across on epoch {} so far):')
-print(np.mean(final_test_accs), np.std(final_test_accs))
-logging.info('Final test acc (mean/std across restarts so far): {} / {}'.format(np.mean(final_test_accs), np.std(final_test_accs)))
-
-print('Highest test acc (mean/std across on epoch {} so far):')
-print(np.mean(highest_test_accs), np.std(highest_test_accs))
-logging.info('Highest test acc (mean/std across restarts so far): {} / {}'.format(np.mean(highest_test_accs), np.std(highest_test_accs)))
-if args.plot:
-  plot_x = np.linspace(0, args.steps, args.steps)
-  from pylab import *
-
-  figure()
-  xlabel('epoch')
-  ylabel('loss')
-  title('train/test accuracy')
-  plot(plot_x, all_train_accs.mean(0), ls="dotted", label='train_acc')
-  plot(plot_x, all_test_accs.mean(0), label='test_acc')
-  plot(plot_x, all_grayscale_test_accs.mean(0), ls="--", label='grayscale_test_acc')
-  legend(prop={'size': 11}, loc="upper right")
-  savefig('train_acc__test_acc.pdf')
-
-  figure()
-  title('train nll / penalty ')
-  plot(plot_x, all_train_nlls.mean(0), ls="dotted", label='train_nll')
-  plot(plot_x, all_irmv1_penalties.mean(0), ls="--", label='irmv1_penalty')
-  plot(plot_x, all_rex_penalties.mean(0), label='rex_penalty')
-  yscale('log')
-  legend(prop={'size': 11}, loc="upper right")
-  savefig('train_nll__penalty.pdf')
-
-if args.save_numpy_log:
-  import os
-  directory = "np_arrays_paper"
-  if not os.path.exists(directory):
-    os.makedirs(directory)
-
-  outfile = "all_train_nlls"
-  np.save(directory + "/" + outfile, all_train_nlls)
-
-  outfile = "all_irmv1_penalties"
-  np.save(directory + "/" + outfile, all_irmv1_penalties)
-
-  outfile = "all_rex_penalties"
-  np.save(directory + "/" + outfile, all_rex_penalties)
-
-  outfile = "all_train_accs"
-  np.save(directory + "/" + outfile, all_train_accs)
-
-  outfile = "all_test_accs"
-  np.save(directory + "/" + outfile, all_test_accs)
-
-  outfile = "all_grayscale_test_accs"
-  np.save(directory + "/" + outfile, all_grayscale_test_accs)
-  
+# print('Highest test acc (mean/std across on epoch {} so far):')
+# print(np.mean(highest_test_accs), np.std(highest_test_accs))
+# logging.info('Highest test acc (mean/std across restarts so far): {} / {}'.format(np.mean(highest_test_accs), np.std(highest_test_accs)))
+# if args.plot:
+#   plot_x = np.linspace(0, args.steps, args.steps)
+#   from pylab import *
+#
+#   figure()
+#   xlabel('epoch')
+#   ylabel('loss')
+#   title('train/test accuracy')
+#   plot(plot_x, all_train_accs.mean(0), ls="dotted", label='train_acc')
+#   plot(plot_x, all_test_accs.mean(0), label='test_acc')
+#   plot(plot_x, all_grayscale_test_accs.mean(0), ls="--", label='grayscale_test_acc')
+#   legend(prop={'size': 11}, loc="upper right")
+#   savefig('train_acc__test_acc.pdf')
+#
+#   figure()
+#   title('train nll / penalty ')
+#   plot(plot_x, all_train_nlls.mean(0), ls="dotted", label='train_nll')
+#   plot(plot_x, all_irmv1_penalties.mean(0), ls="--", label='irmv1_penalty')
+#   plot(plot_x, all_rex_penalties.mean(0), label='rex_penalty')
+#   yscale('log')
+#   legend(prop={'size': 11}, loc="upper right")
+#   savefig('train_nll__penalty.pdf')
+#
+# if args.save_numpy_log:
+#   import os
+#   directory = "np_arrays_paper"
+#   if not os.path.exists(directory):
+#     os.makedirs(directory)
+#
+#   outfile = "all_train_nlls"
+#   np.save(directory + "/" + outfile, all_train_nlls)
+#
+#   outfile = "all_irmv1_penalties"
+#   np.save(directory + "/" + outfile, all_irmv1_penalties)
+#
+#   outfile = "all_rex_penalties"
+#   np.save(directory + "/" + outfile, all_rex_penalties)
+#
+#   outfile = "all_train_accs"
+#   np.save(directory + "/" + outfile, all_train_accs)
+#
+#   outfile = "all_test_accs"
+#   np.save(directory + "/" + outfile, all_test_accs)
+#
+#   outfile = "all_grayscale_test_accs"
+#   np.save(directory + "/" + outfile, all_grayscale_test_accs)
+#
