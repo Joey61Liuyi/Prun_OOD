@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import torch
+from sklearn.metrics import confusion_matrix
 import re
 import torch.nn.functional as F
 from torch import nn, optim, autograd
@@ -8,13 +9,14 @@ import torch.utils.data as Data
 import torchvision
 from dataset import MNIST_colored
 from maskvgg import maskvgg11
+from torch.nn.utils import clip_grad_norm_
 import  cv2
 import os
 import logging
 import math
 from logging import FileHandler
 from logging import StreamHandler
-from dataset import prepare_ood_colored_mnist
+from dataset import prepare_ood_dataset
 import torch.optim.lr_scheduler as lr_scheduler
 from common import *
 import os
@@ -35,12 +37,12 @@ def get_gpu_memory():
   gpu_id = sorted(gpu_dict.items(), key=lambda item: item[1])[-1][0]
   os.environ.setdefault('CUDA_VISIBLE_DEVICES', str(gpu_id))
 
-get_gpu_memory()
+# get_gpu_memory()
 use_cuda = torch.cuda.is_available()
 manual_seed(0)
 parser = argparse.ArgumentParser(description='Colored MNIST')
 parser.add_argument('--hidden_dim', type=int, default=256)
-parser.add_argument('--l2_regularizer_weight', type=float,default=0.001)
+parser.add_argument('--l2_regularizer_weight', type=float,default=0.1)
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--scheduler', type=list, default=[10, 15])
 parser.add_argument('--epochs', type=int, default=30)
@@ -54,8 +56,8 @@ parser.add_argument('--train_set_size', type=int, default=50000)
 parser.add_argument('--eval_interval', type=int, default=1)
 parser.add_argument('--print_eval_intervals', type=str2bool, default=True)
 parser.add_argument('--polar', type=bool, default=True)
-parser.add_argument('--train_env_1__color_noise', type=float, default=0.9)
-parser.add_argument('--train_env_2__color_noise', type=float, default=0.8)
+parser.add_argument('--train_env_1__color_noise', type=float, default=0.0)
+parser.add_argument('--train_env_2__color_noise', type=float, default=0.0)
 #parser.add_argument('--val_env__color_noise', type=float, default=0.1)
 parser.add_argument('--test_env__color_noise', type=float, default=0.0)
 
@@ -100,6 +102,21 @@ elif (args.bn == True) and (args.cox == False):
   args.savepath = 'normal_sparse.pth.tar'
   args.savepath = 'normal_pruned.pth.tar'
 
+
+data_list = ['mnist', 'colored_object', 'scene_object']
+
+data_set = data_list[2]
+
+if data_set == 'mnist':
+  args.batch_size = 5000
+  cfg = None
+else:
+  args.epochs = 100
+  args.scheduler = [10, 20, 50, 75]
+  args.batch_size =128
+  args.lr = 0.0002
+  cfg = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M', 512, 512, 'M', 512, 512]
+
 if args.irm == True:
   last_name = 'IRM'
 elif args.rex == True:
@@ -139,9 +156,7 @@ logger.addHandler(stream_handler)
 for k,v in sorted(vars(args).items()):
   print("\t{}: {}".format(k, v))
   logging.info("\t{}: {}".format(k, v))
-  
-  
-num_batches = (args.train_set_size // 2) // args.batch_size
+
 if args.gpu != None: 
     torch.cuda.set_device(args.gpu)
 # TODO: logging
@@ -198,8 +213,17 @@ def mean_accuracy(logits, y):
   correct = pred.eq(y.view(1, -1).expand_as(pred))
   top1 = correct[:1].contiguous().view(-1).float().sum(0)
   top1 = top1.mul_(100.0 /args.batch_size)
-
   return top1
+
+def class_accuracy(logits, y):
+  output = logits.data
+  _, pred = output.topk(1, 1, True, True)
+  pred = pred.t()
+  correct = pred[0] == y
+  class_acc = []
+  for i in range(10):
+    class_acc.append(100*((correct * (y==i)).sum())/((y==i).sum()))
+  return class_acc
 
 def penalty(logits, y):
   if use_cuda:
@@ -222,11 +246,11 @@ def pretty_print(*values):
 
 color_dict = {'0': [255,0,0], '1': [255,255,0], '2': [0,255,0], '3': [0,100,0], '4': [0,0,255], '5': [255, 0,255],'6': [0,0,128], '7': [220,220,220], '8': [255,255,255], '9': [0,255,255]}
 num_classes = 10
-def create_env(p, val=False, batch_size = 5000):
+def create_env(p, val=False, batch_size = 5000, dataset = 'mnist'):
   # if os.path.exists('Mixed_Mnist_train_{}.pt'.format(p)):
   #   pass
   # else:
-  mixed_train, mixed_test, original_test_set, colored_test_set = prepare_ood_colored_mnist('mnist', p)
+  mixed_train, mixed_test, original_test_set, colored_test_set = prepare_ood_dataset(dataset, p)
   if val:
     loader_id = torch.utils.data.DataLoader(colored_test_set, len(mixed_test), shuffle=True)
     loader_ood = torch.utils.data.DataLoader(original_test_set, len(mixed_test), shuffle=True)
@@ -275,27 +299,27 @@ def make_environment(images, labels, e):
     'images': (images.float() / 255.).cuda(),
     'labels': labels[:, None].cuda()
   }
-train_data = torchvision.datasets.MNIST(root='/data/wyc', train=True,
-                                        transform=torchvision.transforms.ToTensor(),
-                                        download=True)
-val_data = torchvision.datasets.MNIST(root='/data/wyc',
-                                       transform=torchvision.transforms.ToTensor(),
-                                       train=False)
-test_data = torchvision.datasets.MNIST(root='/data/wyc',
-                                       transform=torchvision.transforms.ToTensor(),
-                                       train=False)
-mnist_train = (train_data.data[:50000], train_data.targets[:50000])
-mnist_val = (train_data.data[40000:60000], train_data.targets[40000:60000])
-mnist_test = (test_data.data[:10000], test_data.targets[:10000])
-rng_state = np.random.get_state()
-np.random.shuffle(mnist_train[0].numpy())
-np.random.set_state(rng_state)
-np.random.shuffle(mnist_train[1].numpy())
-
-rng_state = np.random.get_state()
-np.random.shuffle(mnist_val[0].numpy())
-np.random.set_state(rng_state)
-np.random.shuffle(mnist_val[1].numpy())
+# train_data = torchvision.datasets.MNIST(root='/data/wyc', train=True,
+#                                         transform=torchvision.transforms.ToTensor(),
+#                                         download=True)
+# val_data = torchvision.datasets.MNIST(root='/data/wyc',
+#                                        transform=torchvision.transforms.ToTensor(),
+#                                        train=False)
+# test_data = torchvision.datasets.MNIST(root='/data/wyc',
+#                                        transform=torchvision.transforms.ToTensor(),
+#                                        train=False)
+# mnist_train = (train_data.data[:50000], train_data.targets[:50000])
+# mnist_val = (train_data.data[40000:60000], train_data.targets[40000:60000])
+# mnist_test = (test_data.data[:10000], test_data.targets[:10000])
+# rng_state = np.random.get_state()
+# np.random.shuffle(mnist_train[0].numpy())
+# np.random.set_state(rng_state)
+# np.random.shuffle(mnist_train[1].numpy())
+#
+# rng_state = np.random.get_state()
+# np.random.shuffle(mnist_val[0].numpy())
+# np.random.set_state(rng_state)
+# np.random.shuffle(mnist_val[1].numpy())
 
 # envs = [
 #   make_environment(mnist_train[0][::2], mnist_train[1][::2], args.train_env_1__color_noise),
@@ -310,7 +334,7 @@ np.random.shuffle(mnist_val[1].numpy())
 if False:
   model = torch.load(args.resume)
 else:
-  model = maskvgg11(10)
+  model = maskvgg11(10, cfg)
 
 if use_cuda:
   mlp = model.cuda()
@@ -320,9 +344,12 @@ else:
 # Define loss function helpers
 
 criterion = nn.CrossEntropyLoss(reduction='none')
-optimizer = optim.SGD(mlp.parameters(), lr=args.lr, momentum=0.9)
-# optimizer = optim.Adam(mlp.parameters(), lr=args.lr)
-scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.1)
+if data_set == 'mnist':
+  optimizer = optim.SGD(mlp.parameters(), lr=args.lr, momentum=0.9)
+else:
+  optimizer = optim.Adam(mlp.parameters(), lr=args.lr)
+  # optimizer = optim.SGD(mlp.parameters(), lr=args.lr, momentum=0.9)
+scheduler = lr_scheduler.MultiStepLR(optimizer, args.scheduler, gamma=0.25)
 pretty_print('step', 'train nll', 'train acc', 'rex penalty', 'irmv1 penalty', 'test acc')
 # train_los_pre=None
 
@@ -330,9 +357,9 @@ p1 = args.train_env_1__color_noise
 p2 = args.train_env_2__color_noise
 p_test = args.test_env__color_noise
 
-env1 = create_env(p1, False, args.batch_size)
-env2 = create_env(p2, False, args.batch_size)
-env_test = create_env(p_test, True, args.batch_size)
+env1 = create_env(p1, False, args.batch_size, data_set)
+env2 = create_env(p2, False, args.batch_size, data_set)
+env_test = create_env(p_test, True, args.batch_size, data_set)
 envs = [env1, env2, env_test]
 
 
@@ -343,11 +370,7 @@ envs = [env1, env2, env_test]
 #   name = 'REX'
 # elif args.bn == False and args.cox == False:
 #   name = 'No pruning'
-
-
-
-wandb.init(project = "Prune_OOD", entity='peilab', name = name)
-
+wandb.init(project = "Prune_OOD_{}".format(data_set), entity='peilab', name = name)
 
 for epoch in range(args.epochs):
 
@@ -383,12 +406,21 @@ for epoch in range(args.epochs):
     loss_best_devide_partio = []
 
     for edx, env in enumerate(envs[:2]):
-      x, y = next(iter(env["loader"]))
-      x = x.cuda()
-      y = y.cuda()
-      y, domain_label = torch.split(y,1,dim=1)
-      y = y.squeeze().long()
-      domain_label = domain_label.squeeze()
+
+      samples = next(iter(env["loader"]))
+      if len(samples)==2:
+        x = samples[0]
+        y = samples[1]
+        y, domain_label = torch.split(y, 1, dim=1)
+        y = y.squeeze().long()
+        domain_label = domain_label.squeeze()
+      elif len(samples) == 3:
+        x = samples[0]
+        y = samples[1]
+        domain_label = samples[2]
+      x = x.cuda().float()
+      y = y.cuda().long()
+      domain_label = domain_label.cuda()
       logits,env['_mask_list'],env['lasso_list'],env['_mask_before_list'],env['_avg_fea_list']= mlp(x)
       #logits,_mask_list,lasso_list,_mask_before_list,_avg_fea_list= mlp(env['images'][int(n*batch_size):int((n+1)*batch_size)])
       env['nll'] = mean_nll(logits, y)
@@ -535,6 +567,7 @@ for epoch in range(args.epochs):
 
     optimizer.zero_grad()
     loss.backward()
+    clip_grad_norm_(mlp.parameters(), max_norm=1, norm_type=2)
     #updateSaliencyBlock(0.00001, mlp)
     optimizer.step()
   scheduler.step()
@@ -575,22 +608,44 @@ for epoch in range(args.epochs):
       # envs[2]['acc'] =  mean_accuracy(logits,y)
       # test_acc = envs[2]['acc']*args.batch_size / envs[2]["loader"].batch_size
 
-      x, y = next(iter(envs[2]["loader_id"]))
-      x = x.cuda()
+      samples = next(iter(envs[2]["loader_id"]))
+      if len(samples) == 2:
+        x = samples[0]
+        y = samples[1]
+        y, domain_label = torch.split(y, 1, dim=1)
+        y = y.squeeze().long()
+        domain_label = domain_label.squeeze()
+      elif len(samples) == 3:
+        x = samples[0]
+        y = samples[1]
+        domain_label = samples[2]
+      x = x.cuda().float()
       y = y.cuda().long()
-      y, domain_label = torch.split(y, 1, dim=1)
+      domain_label = domain_label.cuda()
       logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
       envs[2]['nll_id'] = mean_nll(logits, y)
       envs[2]['acc_id'] = mean_accuracy(logits, y)
       id_acc = envs[2]['acc_id']*args.batch_size / envs[2]["loader"].batch_size
 
-      x, y = next(iter(envs[2]["loader_ood"]))
-      x = x.cuda()
+      samples = next(iter(envs[2]["loader_ood"]))
+      if len(samples) == 2:
+        x = samples[0]
+        y = samples[1]
+        y, domain_label = torch.split(y, 1, dim=1)
+        y = y.squeeze().long()
+        domain_label = domain_label.squeeze()
+      elif len(samples) == 3:
+        x = samples[0]
+        y = samples[1]
+        domain_label = samples[2]
+      x = x.cuda().float()
       y = y.cuda().long()
-      y, domain_label = torch.split(y, 1, dim=1)
+      domain_label = domain_label.cuda()
       logits, _mask_list, lasso_list, _mask_before_list, _avg_fea_list = mlp(x)
       envs[2]['nll_ood'] = mean_nll(logits, y)
       envs[2]['acc_ood'] = mean_accuracy(logits, y)
+      class_acc = class_accuracy(logits, y)
+      envs[2]['class_acc'] = class_acc
       ood_acc = envs[2]['acc_ood']*args.batch_size / envs[2]["loader"].batch_size
     train_acc_scalar = train_acc.detach().cpu().numpy()
     # test_acc_scalar = test_acc.detach().cpu().numpy()
@@ -613,6 +668,8 @@ for epoch in range(args.epochs):
         "id_acc": id_acc,
         "ood_acc": ood_acc
       }
+      for i in range(len(envs[2]['class_acc'])):
+        info_dict['class_{}_acc'.format(i)] = envs[2]['class_acc'][i]
       wandb.log(info_dict)
 
       logging.info("epoch: [{}]\t"
@@ -629,9 +686,9 @@ for epoch in range(args.epochs):
 sparse_model = mlp
 torch.save(sparse_model,os.path.join(root,args.savepath))
 
-x, y = next(iter(envs[1]["loader"]))
-pruned_model = prune_while_training(sparse_model, num_classes=num_classes, data = x.cpu())
-torch.save(pruned_model,os.path.join(root,args.pruned_savepath))
+# x, y = next(iter(envs[1]["loader"]))
+# pruned_model = prune_while_training(sparse_model, num_classes=num_classes, data = x.cpu())
+# torch.save(pruned_model,os.path.join(root,args.pruned_savepath))
 
 
 

@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image, ImageColor, ImageOps
 from scipy.stats import bernoulli
 import torch
+import h5py
 import torchvision
 import torchvision.transforms as transforms
 # from lacuna import Lacuna10, Lacuna100, Small_Lacuna10, Small_Binary_Lacuna10, Small_Lacuna5
@@ -14,6 +15,61 @@ import torchvision.transforms as transforms
 # from TinyImageNet import TinyImageNet_pretrain, TinyImageNet_finetune, TinyImageNet_finetune5
 # from IPython import embed
 from matplotlib.colors import to_rgb
+class Object_data(torch.utils.data.Dataset):
+
+    def __init__(self, data_set,  p, val ,transform):
+        super(Object_data, self).__init__()
+        self.transform = transform
+        CLASSES = ['person', 'chair', 'car', 'cup', 'airplane', 'bench', 'elephant', 'tv', 'sink', 'train']
+        self.labels = []
+        self.images = None
+        for one in range(len(CLASSES)):
+            tep = np.load('./{}/unbiased_{}_file_{}.pkl.npy'.format(data_set,val,CLASSES[one]))
+            if isinstance(self.images, np.ndarray):
+                self.images = np.concatenate((self.images, tep), axis = 0)
+            else:
+                self.images = tep
+            self.labels += len(tep)*[one]
+
+        self.labels = np.array(self.labels)
+        self.domain_labels = np.ones(self.labels.shape)
+        if p:
+            images2 = None
+            labels2 = []
+            for one in range(len(CLASSES)):
+                tep = np.load('./{}/biased_{}_file_{}.pkl.npy'.format(data_set,val, CLASSES[one]))
+                if isinstance(images2, np.ndarray):
+                    images2 = np.concatenate((images2, tep), axis=0)
+                else:
+                    images2 = tep
+                labels2+= len(tep)*[one]
+
+            labels2 = np.array(labels2)
+            domain_labels2 = np.zeros(labels2.shape)
+            indexes = np.random.choice(len(self.labels), int(p*len(self.labels)), replace = False)
+            self.images[indexes] = images2[indexes]
+            self.labels[indexes] = labels2[indexes]
+            self.domain_labels[indexes] = domain_labels2[indexes]
+
+        self.labels = self.labels.astype(np.int)
+        # self.images = self.images.astype(np.float)
+
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        img, label, domain_label = self.images[idx], self.labels[idx], self.domain_labels[idx]
+        # img = Image.fromarray(img)
+        if self.transform:
+            img = self.transform(img)
+        # label = torch.from_numpy(label)
+        # all_label = torch.tensor([label, domain_label])
+        return img, label, domain_label
+
+
+
+
 
 color_dict = {
   0: to_rgb('red'),
@@ -741,7 +797,9 @@ def random_color_grayscale_arr(arr):
   new_image = np.array(new_image).astype(np.uint8)
   return new_image
 
-def prepare_mixed_data(data_set, colored_set, p):
+def prepare_mixed_data(data_set_i, colored_set_i, p):
+    data_set = copy.deepcopy(data_set_i)
+    colored_set = copy.deepcopy(colored_set_i)
     data_num = len(data_set.targets)
     colored_train_num = int(data_num * p)
     colored_indexes = np.random.choice(data_num, colored_train_num, replace=False)
@@ -757,22 +815,44 @@ def prepare_mixed_data(data_set, colored_set, p):
     mixed_set.targets = mixed_label
     return mixed_set
 
-def prepare_ood_colored_mnist(dataset_name = 'mnist',p:float =0.8, seed: int =1, root: str = './datasets'):
+def prepare_ood_dataset(dataset_name = 'mnist',p:float =0.8, seed: int =1, root: str = './datasets'):
     manual_seed(seed)
-    colored_mnist_dir = os.path.join(root, 'ColoredMNIST')
-    print('Preparing Colored MNIST')
-    # train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
-    # train_colored = torch.load('Colored_Mnist_train.pt')
-    # test_colored = torch.load('Colored_Mnist_test.pt')
+    if dataset_name == 'mnist':
+        print('Preparing Colored MNIST')
+        # train_set, test_set = _DATASETS[dataset_name](colored_mnist_dir)
+        # train_colored = torch.load('Colored_Mnist_train.pt')
+        # test_colored = torch.load('Colored_Mnist_test.pt')
+        colored_train_set = torch.load('Colored_{}_train.pt'.format(dataset_name))
+        colored_test_set = torch.load('Colored_{}_test.pt'.format(dataset_name))
+        ood_train_set = torch.load('OOD_Colored_{}_train.pt'.format(dataset_name))
+        ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(dataset_name))
+        mixed_train = prepare_mixed_data(ood_train_set, colored_train_set, p)
+        mixed_test = prepare_mixed_data(ood_test_set, colored_test_set, p)
 
-    colored_train_set = torch.load('Colored_{}_train.pt'.format(dataset_name))
-    colored_test_set = torch.load('Colored_{}_test.pt'.format(dataset_name))
 
-    ood_train_set = torch.load('OOD_Colored_{}_train.pt'.format(dataset_name))
-    ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(dataset_name))
+    elif dataset_name == 'colored_object':
 
-    mixed_train = prepare_mixed_data(ood_train_set, colored_train_set, p)
-    mixed_test = prepare_mixed_data(ood_test_set, colored_test_set, p)
+        print('Preparing Colored OBJECT')
+        mixed_train = Object_data(file1_name='colored_object_unbiased_train.h5py',
+                                  file2_name='colored_object_biased_train.h5py', p=p, transform=None)
+        mixed_test = Object_data(file1_name='colored_object_unbiased_test.h5py',
+                                 file2_name='colored_object_biased_test.h5py', p=p, transform=None)
+        ood_test_set = Object_data(file1_name='colored_object_unbiased_test.h5py', file2_name=None, p=None,
+                                   transform=None)
+        colored_test_set = Object_data(file1_name='colored_object_biased_test.h5py', file2_name=None, p=None,
+                                       transform=None)
+
+    elif dataset_name == 'scene_object':
+
+        print('Preparing scene OBJECT')
+        mixed_train = Object_data(data_set=dataset_name, p=p, val='train',
+                                  transform=None)
+        mixed_test = Object_data(data_set=dataset_name, p=p, val='test',
+                                  transform=None)
+        ood_test_set = Object_data(data_set=dataset_name, p=None, val='test',
+                                  transform=None)
+        colored_test_set = Object_data(data_set=dataset_name, p=1, val='test',
+                                  transform=None)
     # torch.save(mixed_train, 'Mixed_Mnist_train_{}.pt'.format(p))
     # torch.save(mixed_test, 'Mixed_Mnist_test_{}.pt'.format(p))
     return mixed_train, mixed_test, ood_test_set, colored_test_set
@@ -975,12 +1055,12 @@ def full_colored_data(dataset_name = 'mnist', root: str = './datasets', ood: boo
 
 if __name__ == '__main__':
     # tep = prepare_ood_colored_mnist('mnist', 0.8)
-    full_colored_data('mnist', ood=True)
-    full_colored_data('mnist', ood=False)
+    # full_colored_data('mnist', ood=True)
+    # full_colored_data('mnist', ood=False)
     # full_colored_data('mnist', ood=True)
     # full_colored_data('mnist', ood=False)
     # data_set_name = 'fmnist'
-    # colored_train_set = torch.load('Colored_{}_train.pt'.format(data_set_name))
+    # colored_train_set = torch.loaprepare_ood_datasetd('Colored_{}_train.pt'.format(data_set_name))
     # colored_test_set = torch.load('Colored_{}_test.pt'.format(data_set_name))
     # # train_set, test_set = _DATASETS[data_set_name]('./datasets')
     # #
@@ -988,4 +1068,5 @@ if __name__ == '__main__':
     # ood_test_set = torch.load('OOD_Colored_{}_test.pt'.format(data_set_name))
     #
     # result = prepare_mixed_data(ood_train_set, colored_train_set, 0.8)
+    result = prepare_ood_dataset('mnist')
     print('ok')
