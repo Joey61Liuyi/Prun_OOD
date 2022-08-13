@@ -20,7 +20,7 @@ class Object_data(torch.utils.data.Dataset):
     def __init__(self, data_set,  p, val ,transform):
         super(Object_data, self).__init__()
         self.transform = transform
-        CLASSES = ['person', 'chair', 'car', 'cup', 'airplane', 'bench', 'elephant', 'tv', 'sink', 'train']
+        CLASSES = ['person', 'giraffe', 'truck', 'cup', 'airplane', 'horse', 'elephant', 'umbrella', 'zebra', 'train']
         self.labels = []
         self.images = None
         for one in range(len(CLASSES)):

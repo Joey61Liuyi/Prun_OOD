@@ -111,8 +111,8 @@ if data_set == 'mnist':
   args.batch_size = 5000
   cfg = None
 else:
-  args.epochs = 100
-  args.scheduler = [10, 20, 50, 75]
+  args.epochs = 150
+  args.scheduler = [10, 20, 50, 75, 100]
   args.batch_size =128
   args.lr = 0.0002
   cfg = [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M', 512, 512, 'M', 512, 512]
